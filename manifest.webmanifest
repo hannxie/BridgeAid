@@ -1,0 +1,9 @@
+{
+  "name": "BridgeAid",
+  "short_name": "BridgeAid",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#123b68",
+  "description": "Find trusted community help across the United States."
+}
