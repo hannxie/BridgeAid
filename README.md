@@ -1,22 +1,29 @@
-# BridgeAid
+# BridgeAid Web
 
-A lightweight, nationwide resource finder designed for fast use on mobile devices.
+A responsive multilingual community-resource navigation prototype.
 
-## Run locally
+## Run
 
 ```bash
+cd BridgeAid-Web
 python3 -m http.server 4173
 ```
 
 Open `http://localhost:4173`.
 
-## Files
+## Included
 
-- `index.html` — app shell
-- `css/styles.css` — mobile-first interface
-- `js/app.js` — location, category search, live external searches, BridgeAI popup
-- `data/resources.js` — nationwide resource directory
+- English, Simplified Chinese, and Spanish interface
+- Trusted public resource directory
+- Category filtering and location-aware map searches
+- Saved resources using localStorage
+- Local AI-style intent matching assistant
+- Emergency, 211, and 988 safety links
+- Mobile responsive and keyboard accessible layout
 
-## Notes
+## Prototype limitations
 
-The app uses public directory links and live Google/Maps searches. GPS coordinates stay in the browser and are not sent to a BridgeAid server.
+- The assistant uses local keyword matching, not a live AI API.
+- Eligibility is never guaranteed.
+- “Live search” cards open external map searches.
+- Language, location, and saved resource IDs remain in the browser.

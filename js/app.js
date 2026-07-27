@@ -1,207 +1,27 @@
-import { categories, nationalResources, quickQuestions } from '../data/resources.js';
+import { categories, resources, quickQuestions } from '../data/resources.js';
 
-const state = {
-  location: localStorage.getItem('bridgeaid-location') || '',
-  category: 'all',
-  chatOpen: false
+const T={
+ en:{home:'Home',find:'Find Help',saved:'Saved',about:'About',hero:'Find the right help, not just a list.',sub:'BridgeAid guides you to trusted food, shelter, healthcare, legal, benefits, employment, and transportation resources.',location:'City or ZIP code',search:'Find help',useGps:'Use GPS',what:'What do you need?',best:'Recommended resources',all:'All',nearby:'Nearby map',save:'Save',savedLabel:'Saved',open:'Open resource',call:'Call',source:'Source',verified:'Last checked',none:'No matching resources found.',assistant:'BridgeAid Assistant',welcome:'Tell me what is happening. I will help identify the kind of support you may need.',placeholder:'Example: I lost my job and need food',send:'Send',privacy:'Do not share Social Security numbers, immigration document numbers, passwords, medical records, or payment information.',why:'Why this may help',plan:'Suggested next step',close:'Close',locNeeded:'What city or ZIP code should I search near?',found:'These verified resources may help. Call or check the official site before visiting because details can change.',eligibility:'I can explain listed requirements, but only the organization can make a final eligibility decision.',savedEmpty:'You have not saved any resources yet.',aboutText:'BridgeAid is a multilingual social-service navigation prototype. It uses verified public directories and does not replace emergency, medical, legal, or government professionals.',team:'Team: Ethan Zhao, Elaina Guan, Alyssa Pan, Gabriel Shih'},
+ zh:{home:'首页',find:'寻找帮助',saved:'已保存',about:'关于',hero:'找到真正适合的帮助，而不只是一个列表。',sub:'BridgeAid 帮助您寻找可信的食品、住所、医疗、法律、福利、就业和交通资源。',location:'城市或邮编',search:'寻找帮助',useGps:'使用定位',what:'您需要什么帮助？',best:'推荐资源',all:'全部',nearby:'附近地图',save:'保存',savedLabel:'已保存',open:'打开资源',call:'致电',source:'来源',verified:'最后核实',none:'没有找到符合条件的资源。',assistant:'BridgeAid 助手',welcome:'请告诉我发生了什么。我会帮助您判断可能需要的支持。',placeholder:'例如：我失业了，今天需要食品',send:'发送',privacy:'请勿分享社会安全号码、移民文件号码、密码、医疗记录或付款信息。',why:'为什么可能有帮助',plan:'建议下一步',close:'关闭',locNeeded:'您希望我在哪个城市或邮编附近搜索？',found:'这些已核实资源可能有帮助。信息可能变化，请在前往前致电或查看官方网站。',eligibility:'我可以解释已列出的要求，但只有机构能作出最终资格决定。',savedEmpty:'您还没有保存任何资源。',aboutText:'BridgeAid 是一个多语言社会服务导航原型，使用经过核实的公共资源目录，不替代紧急、医疗、法律或政府专业人员。',team:'团队：Ethan Zhao、Elaina Guan、Alyssa Pan、Gabriel Shih'},
+ es:{home:'Inicio',find:'Buscar ayuda',saved:'Guardados',about:'Acerca de',hero:'Encuentre la ayuda adecuada, no solo una lista.',sub:'BridgeAid le guía a recursos confiables de comida, vivienda, salud, ayuda legal, beneficios, empleo y transporte.',location:'Ciudad o código postal',search:'Buscar ayuda',useGps:'Usar GPS',what:'¿Qué necesita?',best:'Recursos recomendados',all:'Todo',nearby:'Mapa cercano',save:'Guardar',savedLabel:'Guardado',open:'Abrir recurso',call:'Llamar',source:'Fuente',verified:'Última revisión',none:'No se encontraron recursos.',assistant:'Asistente BridgeAid',welcome:'Cuénteme qué está pasando. Le ayudaré a identificar el apoyo que podría necesitar.',placeholder:'Ejemplo: Perdí mi trabajo y necesito comida',send:'Enviar',privacy:'No comparta números de Seguro Social, documentos migratorios, contraseñas, registros médicos ni datos de pago.',why:'Por qué puede ayudar',plan:'Siguiente paso',close:'Cerrar',locNeeded:'¿Cerca de qué ciudad o código postal debo buscar?',found:'Estos recursos verificados podrían ayudar. Llame o consulte el sitio oficial antes de ir porque los detalles pueden cambiar.',eligibility:'Puedo explicar los requisitos publicados, pero solo la organización puede decidir la elegibilidad final.',savedEmpty:'Aún no ha guardado recursos.',aboutText:'BridgeAid es un prototipo multilingüe de navegación social. Usa directorios públicos verificados y no sustituye a profesionales de emergencia, médicos, legales o gubernamentales.',team:'Equipo: Ethan Zhao, Elaina Guan, Alyssa Pan, Gabriel Shih'}
 };
-
-const app = document.querySelector('#app');
-const esc = value => String(value || '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
-
-function mapsUrl(query) {
-  const where = state.location ? ` near ${state.location}` : ' near me';
-  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query + where)}`;
-}
-
-function webSearchUrl(query, site = '') {
-  const where = state.location ? ` ${state.location}` : ' near me';
-  const prefix = site ? `site:${site} ` : '';
-  return `https://www.google.com/search?q=${encodeURIComponent(prefix + query + where)}`;
-}
-
-function resourceUrl(resource) {
-  if (resource.mapQuery) return mapsUrl(resource.mapQuery);
-  return resource.url;
-}
-
-function filteredResources() {
-  return nationalResources.filter(r => state.category === 'all' || r.category === 'all' || r.category === state.category);
-}
-
-function render() {
-  const active = categories.find(c => c.id === state.category);
-  app.innerHTML = `
-    <header class="topbar">
-      <nav class="wrap nav" aria-label="Main">
-        <button class="brand" data-home>BridgeAid</button>
-        <div class="nav-actions">
-          <a class="small-btn" href="tel:211">☎ <span class="label">Call </span>211</a>
-          <button class="small-btn" data-location>📍 <span class="label">Location</span></button>
-        </div>
-      </nav>
-    </header>
-
-    <main id="main">
-      <section class="hero wrap">
-        <h1>Find help now.</h1>
-        <p>Free help across the U.S.</p>
-        <form class="location-box" id="locationForm">
-          <input id="locationInput" aria-label="City or ZIP code" placeholder="City or ZIP" value="${esc(state.location)}">
-          <button type="button" class="secondary" id="useLocation" aria-label="Use current location">◎ Use GPS</button>
-          <button class="primary" type="submit">Search</button>
-        </form>
-        <div class="emergency">
-          <a class="danger" href="tel:911">Emergency: 911</a>
-          <a href="tel:988">Crisis: 988</a>
-          <a href="tel:211">Local help: 211</a>
-        </div>
-      </section>
-
-      <section class="section wrap" aria-labelledby="need-title">
-        <div class="section-head"><h2 id="need-title">What do you need?</h2></div>
-        <div class="category-grid">
-          ${categories.map(c => `
-            <button class="category ${state.category === c.id ? 'active' : ''}" data-category="${c.id}">
-              <span>${c.icon}</span>${c.label}
-            </button>`).join('')}
-        </div>
-      </section>
-
-      <section class="section wrap" aria-labelledby="help-title">
-        <div class="section-head">
-          <div><h2 id="help-title">${active ? active.label : 'Help'} resources</h2><div class="muted">${state.location ? esc(state.location) : 'Enter a location for nearby results'}</div></div>
-        </div>
-        <div class="controls">
-          <button class="pill ${state.category === 'all' ? 'active' : ''}" data-category="all">All</button>
-          ${active ? `<a class="pill" target="_blank" rel="noopener" href="${mapsUrl(active.query)}">Nearby map ↗</a>` : ''}
-        </div>
-        <div class="resource-list">
-          ${filteredResources().map(r => `
-            <article class="resource-card">
-              <span class="tag">${r.category === 'all' ? 'Many needs' : r.category}</span>
-              <h3>${esc(r.name)}</h3>
-              <p>${esc(r.short)}</p>
-              <div class="card-actions">
-                <a class="primary" target="_blank" rel="noopener" href="${resourceUrl(r)}">${esc(r.action)} ↗</a>
-                ${r.phone ? `<a class="secondary" href="tel:${r.phone.replace(/[^\d+]/g, '')}">Call</a>` : ''}
-              </div>
-            </article>`).join('')}
-        </div>
-      </section>
-
-      <section class="section wrap">
-        <div class="web-help">
-          <h2>More online help</h2>
-          <div>Live searches for local posts, videos, and programs.</div>
-          <div class="web-links">
-            <a target="_blank" rel="noopener" href="${webSearchUrl((active?.query || 'free help resources') + ' nonprofit government')}">Web results ↗</a>
-            <a target="_blank" rel="noopener" href="${webSearchUrl(active?.query || 'free help resources', 'youtube.com')}">Videos ↗</a>
-            <a target="_blank" rel="noopener" href="${webSearchUrl((active?.query || 'free help resources') + ' community recommendation', 'reddit.com')}">Community posts ↗</a>
-            <a target="_blank" rel="noopener" href="${webSearchUrl(active?.query || 'free help resources', '.gov')}">Government ↗</a>
-          </div>
-        </div>
-      </section>
-    </main>
-
-    <button class="ai-button" id="aiButton" aria-label="Open BridgeAI" aria-expanded="${state.chatOpen}">💬</button>
-    ${chatMarkup()}
-    <div id="toast" class="toast hidden" role="status"></div>
-  `;
-  bind();
-}
-
-function chatMarkup() {
-  return `
-    <aside class="chat ${state.chatOpen ? '' : 'hidden'}" id="chat" role="dialog" aria-label="BridgeAI">
-      <div class="chat-head"><strong>BridgeAI</strong><button id="closeChat" aria-label="Close">×</button></div>
-      <div class="messages" id="messages">
-        <div class="msg bot">What help do you need?</div>
-      </div>
-      <div class="quick">${quickQuestions.map(q => `<button data-question="${esc(q)}">${esc(q)}</button>`).join('')}</div>
-      <form class="chat-form" id="chatForm">
-        <input id="chatInput" aria-label="Message" placeholder="Food, shelter, clinic…" required>
-        <button class="primary">Send</button>
-      </form>
-    </aside>`;
-}
-
-function bind() {
-  document.querySelector('[data-home]').onclick = () => { state.category = 'all'; window.scrollTo({top: 0, behavior: 'smooth'}); render(); };
-  document.querySelector('[data-location]').onclick = () => document.querySelector('#locationInput').focus();
-
-  document.querySelectorAll('[data-category]').forEach(button => {
-    button.onclick = () => {
-      state.category = button.dataset.category;
-      render();
-      document.querySelector('#help-title')?.scrollIntoView({behavior: 'smooth', block: 'start'});
-    };
-  });
-
-  document.querySelector('#locationForm').onsubmit = event => {
-    event.preventDefault();
-    setLocation(document.querySelector('#locationInput').value.trim());
-  };
-
-  document.querySelector('#useLocation').onclick = useGPS;
-  document.querySelector('#aiButton').onclick = () => { state.chatOpen = !state.chatOpen; render(); if (state.chatOpen) document.querySelector('#chatInput')?.focus(); };
-  document.querySelector('#closeChat')?.addEventListener('click', () => { state.chatOpen = false; render(); });
-  document.querySelectorAll('[data-question]').forEach(button => button.onclick = () => answer(button.dataset.question));
-  document.querySelector('#chatForm')?.addEventListener('submit', event => {
-    event.preventDefault();
-    const input = document.querySelector('#chatInput');
-    answer(input.value);
-    input.value = '';
-  });
-}
-
-function setLocation(value) {
-  state.location = value;
-  localStorage.setItem('bridgeaid-location', value);
-  render();
-  showToast(value ? `Location: ${value}` : 'Location cleared');
-}
-
-function useGPS() {
-  if (!navigator.geolocation) return showToast('GPS is not available');
-  showToast('Getting location…');
-  navigator.geolocation.getCurrentPosition(
-    pos => setLocation(`${pos.coords.latitude.toFixed(4)}, ${pos.coords.longitude.toFixed(4)}`),
-    () => showToast('GPS blocked. Enter a city or ZIP.'),
-    { enableHighAccuracy: false, timeout: 8000, maximumAge: 300000 }
-  );
-}
-
-function answer(question) {
-  const messages = document.querySelector('#messages');
-  if (!messages) return;
-  const safe = esc(question);
-  messages.insertAdjacentHTML('beforeend', `<div class="msg user">${safe}</div>`);
-  const text = question.toLowerCase();
-
-  if (/211/.test(text)) {
-    messages.insertAdjacentHTML('beforeend', `<div class="msg bot">Call <a href="tel:211"><strong>211</strong></a> for local help.</div>`);
-  } else {
-    const category = categories.find(c => text.includes(c.label.toLowerCase()) || text.includes(c.id) || c.query.split(' ').some(word => word.length > 4 && text.includes(word)));
-    const query = category?.query || question;
-    const label = category?.label || 'help';
-    messages.insertAdjacentHTML('beforeend', `
-      <div class="msg bot">
-        <strong>${esc(label)}</strong><br>
-        <a target="_blank" rel="noopener" href="${mapsUrl(query)}">See nearby places ↗</a><br>
-        <a target="_blank" rel="noopener" href="${webSearchUrl(query)}">Search more help ↗</a>
-      </div>`);
-  }
-  messages.scrollTop = messages.scrollHeight;
-}
-
-function showToast(message) {
-  const toast = document.querySelector('#toast');
-  if (!toast) return;
-  toast.textContent = message;
-  toast.classList.remove('hidden');
-  clearTimeout(showToast.timer);
-  showToast.timer = setTimeout(() => toast.classList.add('hidden'), 2200);
-}
-
+const saved=new Set(JSON.parse(localStorage.getItem('bridgeaid-saved')||'[]'));
+const state={lang:localStorage.getItem('bridgeaid-lang')||'en',location:localStorage.getItem('bridgeaid-location')||'',category:'all',page:'home',chatOpen:false,messages:[]};
+const app=document.querySelector('#app'); const t=k=>T[state.lang][k]||T.en[k]; const esc=v=>String(v??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+const label=c=>c[state.lang]||c.en; const desc=r=>r.short[state.lang]||r.short.en;
+function mapsUrl(q){return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q+(state.location?` near ${state.location}`:' near me'))}`}
+function url(r){return r.mapQuery?mapsUrl(r.mapQuery):r.url}
+function list(){return resources.filter(r=>(state.category==='all'||r.category==='all'||r.category===state.category))}
+function card(r){const isSaved=saved.has(r.id);return `<article class="resource-card"><div class="card-top"><span class="tag">${esc(label(categories.find(c=>c.id===r.category)||categories[0]))}</span><button class="save-btn" data-save="${r.id}" aria-pressed="${isSaved}">${isSaved?'★ '+t('savedLabel'):'☆ '+t('save')}</button></div><h3>${esc(r.name)}</h3><p>${esc(desc(r))}</p><div class="facts"><span>${t('source')}: ${esc(r.source)}</span><span>${t('verified')}: ${esc(r.verified)}</span></div><div class="card-actions"><a class="primary" target="_blank" rel="noopener" href="${url(r)}">${t('open')} ↗</a>${r.phone?`<a class="secondary" href="tel:${r.phone.replace(/[^\d+]/g,'')}">☎ ${t('call')}</a>`:''}</div></article>`}
+function nav(){return `<header class="topbar"><nav class="wrap nav" aria-label="Main"><button class="brand" data-page="home"><span class="logo">⌒</span>BridgeAid</button><div class="nav-links"><button data-page="home">${t('home')}</button><button data-page="find">${t('find')}</button><button data-page="saved">${t('saved')} (${saved.size})</button><button data-page="about">${t('about')}</button></div><div class="nav-actions"><select id="language" aria-label="Language"><option value="en">English</option><option value="zh">中文</option><option value="es">Español</option></select><a class="small-btn" href="tel:211">☎ 211</a></div></nav></header>`}
+function safety(){return `<div class="safety"><strong>Emergency: 911</strong><span>Community help: 211</span><span>Crisis support: 988</span></div>`}
+function home(){return `<main id="main"><section class="hero"><div class="wrap hero-grid"><div><span class="eyebrow">AI social service navigation</span><h1>${t('hero')}</h1><p>${t('sub')}</p><form id="locationForm" class="location-box"><input id="locationInput" aria-label="${t('location')}" placeholder="${t('location')}" value="${esc(state.location)}"><button type="button" class="secondary" id="gps">◎ ${t('useGps')}</button><button class="primary">${t('search')}</button></form>${safety()}</div><div class="hero-card"><span class="hero-icon">🤝</span><h2>${t('assistant')}</h2><p>${t('welcome')}</p><button class="primary" id="openChat">${t('assistant')}</button></div></div></section><section class="wrap section"><div class="section-head"><h2>${t('what')}</h2></div><div class="category-grid">${categories.filter(c=>c.id!=='all').map(c=>`<button class="category" data-category="${c.id}"><span>${c.icon}</span>${label(c)}</button>`).join('')}</div></section><section class="wrap section"><div class="section-head"><h2>${t('best')}</h2><button class="text-btn" data-page="find">${t('find')} →</button></div><div class="resource-list">${resources.slice(0,4).map(card).join('')}</div></section></main>`}
+function findPage(){const arr=list();const active=categories.find(c=>c.id===state.category)||categories[0];return `<main id="main" class="wrap section page"><div class="page-title"><div><span class="eyebrow">Trusted public directories</span><h1>${t('find')}</h1><p>${state.location?esc(state.location):t('locNeeded')}</p></div>${safety()}</div><form id="locationForm" class="location-box compact"><input id="locationInput" aria-label="${t('location')}" placeholder="${t('location')}" value="${esc(state.location)}"><button type="button" class="secondary" id="gps">◎ ${t('useGps')}</button><button class="primary">${t('search')}</button></form><div class="controls">${categories.map(c=>`<button class="pill ${state.category===c.id?'active':''}" data-category="${c.id}">${c.icon} ${label(c)}</button>`).join('')}${state.category!=='all'?`<a class="pill" target="_blank" rel="noopener" href="${mapsUrl(active.query)}">${t('nearby')} ↗</a>`:''}</div><div class="resource-list">${arr.length?arr.map(card).join(''):`<div class="empty">${t('none')}</div>`}</div></main>`}
+function savedPage(){const arr=resources.filter(r=>saved.has(r.id));return `<main id="main" class="wrap section page"><div class="page-title"><h1>${t('saved')}</h1></div><div class="resource-list">${arr.length?arr.map(card).join(''):`<div class="empty">${t('savedEmpty')}</div>`}</div></main>`}
+function about(){return `<main id="main" class="wrap section page about"><span class="eyebrow">Community-centered technology</span><h1>${t('about')}</h1><p class="lead">${t('aboutText')}</p><div class="about-grid"><article><h2>Verified first</h2><p>Resources come from public, government, or nonprofit directories. Every card shows its source and verification date.</p></article><article><h2>Privacy first</h2><p>No account is required. Saved resources, language, and location remain in your browser.</p></article><article><h2>Human decisions</h2><p>BridgeAid cannot guarantee eligibility, availability, legal outcomes, medical outcomes, or emergency assistance.</p></article></div><p><strong>${t('team')}</strong></p>${safety()}</main>`}
+function chat(){return `<button class="ai-button" id="aiButton" aria-label="${t('assistant')}" aria-expanded="${state.chatOpen}">💬</button><aside class="chat ${state.chatOpen?'':'hidden'}" role="dialog" aria-modal="true" aria-label="${t('assistant')}"><div class="chat-head"><div><strong>${t('assistant')}</strong><small>Verified resources only</small></div><button id="closeChat" aria-label="${t('close')}">×</button></div><div class="messages" id="messages"><div class="msg bot">${t('welcome')}</div>${state.messages.map(m=>`<div class="msg ${m.role}">${m.html}</div>`).join('')}</div><div class="quick">${quickQuestions[state.lang].map(q=>`<button data-question="${esc(q)}">${esc(q)}</button>`).join('')}</div><form class="chat-form" id="chatForm"><input id="chatInput" aria-label="Message" placeholder="${t('placeholder')}" required><button class="primary">${t('send')}</button></form><p class="privacy">${t('privacy')}</p></aside>`}
+function render(){document.documentElement.lang=state.lang==='zh'?'zh-Hans':state.lang;app.innerHTML=nav()+(state.page==='home'?home():state.page==='find'?findPage():state.page==='saved'?savedPage():about())+chat()+`<footer><div class="wrap">BridgeAid · ${new Date().getFullYear()} · ${t('team')}</div></footer>`;bind()}
+function bind(){document.querySelector('#language').value=state.lang;document.querySelector('#language').onchange=e=>{state.lang=e.target.value;localStorage.setItem('bridgeaid-lang',state.lang);render()};document.querySelectorAll('[data-page]').forEach(b=>b.onclick=()=>{state.page=b.dataset.page;render();window.scrollTo(0,0)});document.querySelectorAll('[data-category]').forEach(b=>b.onclick=()=>{state.category=b.dataset.category;state.page='find';render();window.scrollTo(0,0)});document.querySelectorAll('[data-save]').forEach(b=>b.onclick=()=>{saved.has(b.dataset.save)?saved.delete(b.dataset.save):saved.add(b.dataset.save);localStorage.setItem('bridgeaid-saved',JSON.stringify([...saved]));render()});document.querySelector('#locationForm')?.addEventListener('submit',e=>{e.preventDefault();state.location=document.querySelector('#locationInput').value.trim();localStorage.setItem('bridgeaid-location',state.location);state.page='find';render()});document.querySelector('#gps')?.addEventListener('click',useGps);document.querySelector('#openChat')?.addEventListener('click',()=>{state.chatOpen=true;render();setTimeout(()=>document.querySelector('#chatInput')?.focus(),0)});document.querySelector('#aiButton').onclick=()=>{state.chatOpen=!state.chatOpen;render()};document.querySelector('#closeChat')?.addEventListener('click',()=>{state.chatOpen=false;render()});document.querySelectorAll('[data-question]').forEach(b=>b.onclick=()=>answer(b.dataset.question));document.querySelector('#chatForm')?.addEventListener('submit',e=>{e.preventDefault();answer(document.querySelector('#chatInput').value)})}
+function useGps(){if(!navigator.geolocation)return; navigator.geolocation.getCurrentPosition(p=>{state.location=`${p.coords.latitude.toFixed(4)}, ${p.coords.longitude.toFixed(4)}`;localStorage.setItem('bridgeaid-location',state.location);render()},()=>alert(state.lang==='zh'?'无法获取位置，请手动输入城市或邮编。':state.lang==='es'?'No se pudo obtener la ubicación. Ingrese ciudad o código postal.':'Location unavailable. Enter a city or ZIP code.'))}
+function answer(q){state.messages.push({role:'user',html:esc(q)});const s=q.toLowerCase();let cat=/food|hungry|pantry|comida|alimento|食品|食物|饿/.test(s)?'food':/shelter|housing|homeless|refugio|vivienda|住所|住房/.test(s)?'shelter':/health|clinic|doctor|salud|医疗|诊所/.test(s)?'health':/legal|lawyer|immigration|abogado|法律|移民/.test(s)?'legal':/snap|benefit|beneficio|福利/.test(s)?'benefits':/job|work|empleo|trabajo|工作|就业/.test(s)?'jobs':/bus|ride|transport|transporte|交通/.test(s)?'transport':null;const eligibility=/qualif|eligible|资格|符合/.test(s);if(!cat){state.messages.push({role:'bot',html:esc(t('locNeeded'))});}else{const picks=resources.filter(r=>r.category===cat||r.category==='all').slice(0,3);const html=`${eligibility?`<p>${esc(t('eligibility'))}</p>`:''}<p>${esc(t('found'))}</p>${picks.map(r=>`<div class="chat-result"><strong>${esc(r.name)}</strong><span>${esc(desc(r))}</span><a target="_blank" rel="noopener" href="${url(r)}">${esc(t('open'))} ↗</a></div>`).join('')}`;state.messages.push({role:'bot',html})}state.chatOpen=true;render();setTimeout(()=>{const m=document.querySelector('#messages');if(m)m.scrollTop=m.scrollHeight},0)}
 render();
