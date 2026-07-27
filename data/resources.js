@@ -1,15 +1,86 @@
-export const resources = [
-    { id: 'philabundance', name: 'Philabundance', category: 'food', description: 'Regional food bank connecting residents to free food through more than 300 community partners.', simple: 'Use the Find Food tool to locate a nearby pantry. Call the pantry before you go because hours and food availability can change.', address: '3616 S. Galloway Street, Philadelphia, PA 19148', neighborhood: 'South Philadelphia', zip: '19148', phone: '215-339-0900', website: 'https://www.philabundance.org/', hours: 'Direct food pickup hours vary by partner location. Main office hours not listed for client food pickup.', openToday: null, services: ['Food pantry locator', 'Food assistance referrals', 'Culinary workforce training'], eligibility: ['Everyone', 'Low-income residents', 'Families', 'Seniors'], documents: 'Varies by partner pantry; call ahead.', languages: ['English', 'Spanish', 'Chinese'], cost: 'Free', accessibility: 'Varies by partner location.', appointment: 'Varies by partner location', source: 'https://www.philabundance.org/our-work-faqs/', verified: '2026-07-24', notes: 'Philabundance is primarily a food distribution network. Use its map to find a direct-service pantry.' },
-    { id: 'share-food', name: 'Share Food Program', category: 'food', description: 'Philadelphia nonprofit distributing nutritious food through community partners and neighborhood programs.', simple: 'Share Food Program helps communities get groceries. Contact the organization or a nearby partner to confirm where and when food is available.', address: '2901 W. Hunting Park Avenue, Philadelphia, PA 19129', neighborhood: 'Allegheny West', zip: '19129', phone: '215-223-2220', website: 'https://www.sharefoodprogram.org/', hours: 'Program schedules vary. Call or check the official website.', openToday: null, services: ['Food distribution', 'Senior food boxes', 'Community pantry support'], eligibility: ['Everyone', 'Seniors', 'Low-income residents', 'Families'], documents: 'Program-specific; confirm before visiting.', languages: ['English', 'Spanish'], cost: 'Free', accessibility: 'Contact organization for current details.', appointment: 'Program-specific', source: 'https://www.sharefoodprogram.org/', verified: '2026-07-24', notes: 'Prototype summary based on official program descriptions; exact distribution details vary.' },
-    { id: 'broad-street-love', name: 'Broad Street Love', category: 'food', description: 'Provides meals and supportive services for people experiencing deep poverty and homelessness.', simple: 'You may be able to receive a weekday meal and connect with support services. Call before visiting to confirm the meal schedule.', address: '315 S. Broad Street, Philadelphia, PA 19107', neighborhood: 'Center City', zip: '19107', phone: null, website: 'https://broadstreetlove.org/', hours: 'Meal listing: Monday–Friday, 11:30 a.m.–1:15 p.m. Confirm before visiting.', openToday: true, services: ['Prepared meals', 'Mail service', 'Personal care supplies', 'Supportive services'], eligibility: ['Everyone', 'People experiencing homelessness', 'Low-income residents'], documents: 'No verified document requirement available.', languages: ['English'], cost: 'Free', accessibility: 'Contact organization for current details.', appointment: 'Walk-ins accepted for listed meal service', source: 'https://www.projecthome.org/where-turn-meals', verified: '2026-07-24', notes: 'Hours are from Project HOME’s April 2026 Where to Turn guide.' },
-    { id: 'hub-of-hope', name: 'Hub of Hope — Project HOME', category: 'housing', description: 'A low-barrier engagement center offering daytime support and connections to shelter, health, and housing services.', simple: 'You can visit for daytime support and help connecting to services. It is open daily, but closed on holidays. Call to confirm before going.', address: '1400 Arch Street, Suburban Station Concourse, Philadelphia, PA 19102', neighborhood: 'Center City', zip: '19102', phone: '215-309-5225', website: 'https://www.projecthome.org/drop-centers', hours: 'Monday–Sunday, 7 a.m.–7 p.m.; closed on holidays.', openToday: true, services: ['Drop-in support', 'Showers', 'Laundry', 'Healthcare connection', 'Housing referrals'], eligibility: ['Everyone', 'People experiencing homelessness'], documents: 'No verified requirement available.', languages: ['English'], cost: 'Free', accessibility: 'Located in Suburban Station concourse; call for specific accessibility needs.', appointment: 'Walk-ins accepted', source: 'https://www.projecthome.org/drop-centers', verified: '2026-07-24', notes: 'Services can change; call before visiting.' },
-    { id: 'project-home-health', name: 'Stephen Klein Wellness Center — Project HOME', category: 'health', description: 'Federally Qualified Health Center providing affordable primary, behavioral, dental, reproductive, and pediatric care.', simple: 'You can get health care even if you do not have insurance. Walk-ins may be accepted, but an appointment is strongly encouraged. Bring insurance information if you have it.', address: '2144 Cecil B. Moore Avenue, Philadelphia, PA 19121', neighborhood: 'North Philadelphia', zip: '19121', phone: '215-320-6187', website: 'https://www.projecthome.org/healthcare-services', hours: 'Monday–Friday, 9 a.m.–5 p.m. according to April 2026 guide.', openToday: true, services: ['Primary care', 'Behavioral health', 'Dental care', 'Pediatric care', 'Reproductive health'], eligibility: ['Everyone', 'Uninsured people', 'Low-income residents', 'People experiencing homelessness'], documents: 'Insurance card if available; call for registration requirements.', languages: ['English', 'Spanish', 'Interpretation'], cost: 'Low-cost / sliding fee', accessibility: 'Contact center for accommodations.', appointment: 'Walk-ins accepted; appointments strongly encouraged', source: 'https://www.projecthome.org/where-turn-health-youth-safety-services', verified: '2026-07-24', notes: 'Care is available regardless of ability to pay; fees may apply on a sliding scale.' },
-    { id: 'city-health-3', name: 'Philadelphia Health Center 3', category: 'health', description: 'City-operated health center offering primary care, dental care, behavioral health, and support services.', simple: 'Philadelphia residents can receive primary care here, including if uninsured. Call first because some services require an appointment.', address: '555 S. 43rd Street, Philadelphia, PA 19104', neighborhood: 'West Philadelphia', zip: '19104', phone: '215-685-7504', website: 'https://www.phila.gov/services/mental-physical-health/city-health-centers/', hours: 'Mon 8 a.m.–8 p.m.; Tue–Fri 8 a.m.–4:30 p.m.; Sat closed.', openToday: true, services: ['Primary care', 'Dental care', 'Behavioral health', 'Vaccines', 'Social work'], eligibility: ['Everyone', 'Uninsured people', 'Low-income residents', 'Families'], documents: 'Proof of residency may be required for some programs; bring insurance card if available.', languages: ['English', 'Spanish', 'Chinese', 'Interpretation'], cost: 'Low-cost / income-based fee', accessibility: 'City facility; contact center for specific accommodations.', appointment: 'Urgent walk-ins accepted; appointments required for some services', source: 'https://www.phila.gov/services/mental-physical-health/city-health-centers/', verified: '2026-07-24', notes: 'Hours and available services can change with demand.' },
-    { id: 'cls', name: 'Community Legal Services of Philadelphia', category: 'legal', description: 'Provides free civil legal assistance to eligible low-income Philadelphia residents.', simple: 'CLS may help with housing, public benefits, employment, debt, and other civil legal problems. Call or visit during intake hours. Bring letters, bills, or other papers about your issue.', address: '1424 Chestnut Street, Philadelphia, PA 19102', neighborhood: 'Center City', zip: '19102', phone: '215-981-3700', website: 'https://clsphila.org/get-help/', hours: 'Phone intake Monday–Thursday, 9 a.m.–3 p.m.; some walk-in intake Tuesday and Thursday, 9 a.m.–12 p.m. Confirm current office status.', openToday: true, services: ['Housing law', 'Public benefits', 'Employment law', 'Consumer debt', 'Family advocacy'], eligibility: ['Low-income residents', 'Seniors', 'Families', 'Immigrants and refugees'], documents: 'Bring letters, notices, bills, court papers, and other documents related to your issue.', languages: ['English', 'Spanish', 'Interpretation'], cost: 'Free', accessibility: 'Contact CLS for accommodations.', appointment: 'Phone and walk-in intake; representation not guaranteed', source: 'https://clsphila.org/', verified: '2026-07-24', notes: 'BridgeAid cannot determine legal eligibility or provide legal advice.' },
-    { id: 'hias-pa', name: 'HIAS Pennsylvania', category: 'legal', description: 'Provides immigration legal services and social support for immigrants, refugees, and asylum seekers.', simple: 'HIAS Pennsylvania may help with immigration legal questions and refugee support. Contact them before visiting. They decide whether they can accept your case.', address: '600 Chestnut Street, Suite 500B, Philadelphia, PA 19106', neighborhood: 'Old City', zip: '19106', phone: '215-832-0900', website: 'https://hiaspa.org/', hours: 'Office and intake hours unavailable in verified prototype data; call first.', openToday: null, services: ['Immigration legal services', 'Refugee resettlement', 'Citizenship support', 'Employment support'], eligibility: ['Immigrants and refugees'], documents: 'Depends on service; do not send sensitive immigration numbers through BridgeAid.', languages: ['English', 'Spanish', 'Interpretation'], cost: 'Free or low-cost; confirm by service', accessibility: 'Contact organization for current details.', appointment: 'Appointment or intake required', source: 'https://hiaspa.org/', verified: '2026-07-24', notes: 'Do not share immigration document numbers in the BridgeAid assistant.' },
-    { id: 'nsc', name: 'Nationalities Service Center', category: 'legal', description: 'Supports immigrants and refugees with legal, health, education, employment, and resettlement services.', simple: 'NSC offers several kinds of help for immigrants and refugees. Call first so staff can direct you to the right program.', address: '1216 Arch Street, 4th Floor, Philadelphia, PA 19107', neighborhood: 'Center City', zip: '19107', phone: '215-893-8400', website: 'https://nscphila.org/', hours: 'Current client intake hours unavailable in verified prototype data; call first.', openToday: null, services: ['Immigration legal help', 'Refugee services', 'Health access', 'Employment support', 'Language learning'], eligibility: ['Immigrants and refugees', 'Students', 'Families'], documents: 'Program-specific; ask during intake.', languages: ['English', 'Spanish', 'Chinese', 'Interpretation'], cost: 'Free or low-cost; varies by program', accessibility: 'Contact organization for current details.', appointment: 'Intake or appointment usually required', source: 'https://nscphila.org/', verified: '2026-07-24', notes: 'Service availability and eligibility depend on program capacity.' },
-    { id: 'benephilly', name: 'BenePhilly', category: 'benefits', description: 'Free one-on-one help for Philadelphia residents applying for public benefits.', simple: 'A counselor can help you apply for benefits such as food, health insurance, utilities, property tax help, college aid, and disability benefits. Call the helpline to begin.', address: 'Multiple community locations in Philadelphia', neighborhood: 'Citywide', zip: 'Multiple', phone: '800-994-5537', website: 'https://www.phila.gov/programs/benephilly/', hours: 'Helpline hours not listed on the official overview; call to confirm.', openToday: null, services: ['Benefits screening', 'Application assistance', 'Follow-up support'], eligibility: ['Everyone', 'Low-income residents', 'Seniors', 'Students', 'Families', 'Uninsured people'], documents: 'A counselor will explain which documents are needed for each benefit.', languages: ['English', 'Spanish', 'Chinese', 'Interpretation'], cost: 'Free', accessibility: 'Multiple community-based locations; ask helpline for accommodations.', appointment: 'Call helpline for referral', source: 'https://www.phila.gov/programs/benephilly/', verified: '2026-07-24', notes: 'BenePhilly helps with applications but cannot guarantee benefit approval.' },
-    { id: 'puentes', name: 'Puentes de Salud', category: 'health', description: 'Community organization serving Philadelphia’s Latinx immigrant community through health, education, and social services.', simple: 'Puentes de Salud offers health and community support, especially for Spanish-speaking immigrants. Call before visiting to learn how to register.', address: '1700 South Street, Philadelphia, PA 19146', neighborhood: 'Graduate Hospital', zip: '19146', phone: '215-454-8000', website: 'https://www.puentesdesalud.org/', hours: 'Current clinic schedule unavailable in verified prototype data; call first.', openToday: null, services: ['Primary care', 'Behavioral health', 'Education', 'Community support'], eligibility: ['Immigrants and refugees', 'Uninsured people', 'Low-income residents', 'Families'], documents: 'Call for registration requirements.', languages: ['English', 'Spanish'], cost: 'Free or low-cost; confirm by service', accessibility: 'Contact organization for current details.', appointment: 'Appointment generally required', source: 'https://www.puentesdesalud.org/', verified: '2026-07-24', notes: 'Prototype summary; confirm current clinic intake and location details.' },
-    { id: 'prevention-point', name: 'Prevention Point Philadelphia', category: 'health', description: 'Provides harm reduction, medical, housing, and social services for people affected by substance use and homelessness.', simple: 'You can ask for low-barrier health and social support. Services vary by day, so check the official schedule or call before visiting.', address: '2913–15 Kensington Avenue, Philadelphia, PA 19134', neighborhood: 'Kensington', zip: '19134', phone: '215-634-5272', website: 'https://ppponline.org/', hours: 'Program schedules vary; confirm on official website or by phone.', openToday: null, services: ['Harm reduction', 'Medical care', 'Social services', 'Housing support', 'Overdose prevention'], eligibility: ['Everyone', 'People experiencing homelessness', 'Uninsured people', 'Low-income residents'], documents: 'No verified general requirement available.', languages: ['English', 'Spanish'], cost: 'Free', accessibility: 'Contact organization for specific accommodations.', appointment: 'Many low-barrier services; program-specific', source: 'https://ppponline.org/', verified: '2026-07-24', notes: 'For overdose or other emergencies, call 911.' },
-    { id: 'ccp-keystone', name: 'Community College of Philadelphia — Student Support', category: 'education', description: 'Student services include advising, emergency support referrals, tutoring, and help navigating college resources.', simple: 'Current or prospective students can contact the college for academic and basic-needs support. Ask which services are available to you.', address: '1700 Spring Garden Street, Philadelphia, PA 19130', neighborhood: 'Spring Garden', zip: '19130', phone: '215-751-8000', website: 'https://www.ccp.edu/student-support', hours: 'Service hours vary by office and academic calendar.', openToday: null, services: ['Academic advising', 'Tutoring', 'Student basic-needs referrals', 'Career support'], eligibility: ['Students'], documents: 'Student ID may be needed for enrolled-student services.', languages: ['English', 'Interpretation'], cost: 'Many support services are free to students', accessibility: 'Accessibility services are available through the college.', appointment: 'Varies by office', source: 'https://www.ccp.edu/student-support', verified: '2026-07-24', notes: 'Prototype entry; verify specific office hours and eligibility with the college.' }
+export const categories = [
+  { id: 'food', label: 'Food', icon: '🍽️', query: 'free food pantry soup kitchen' },
+  { id: 'shelter', label: 'Shelter', icon: '🛏️', query: 'homeless shelter emergency housing' },
+  { id: 'health', label: 'Health', icon: '🏥', query: 'free clinic community health center' },
+  { id: 'showers', label: 'Showers', icon: '🚿', query: 'free public shower homeless services' },
+  { id: 'jobs', label: 'Jobs', icon: '💼', query: 'workforce center job help' },
+  { id: 'transport', label: 'Rides', icon: '🚌', query: 'free transportation assistance social services' },
+  { id: 'benefits', label: 'Benefits', icon: '📄', query: 'SNAP benefits assistance office' },
+  { id: 'legal', label: 'Legal', icon: '⚖️', query: 'free legal aid' }
+];
+
+export const nationalResources = [
+  {
+    id: '211', category: 'all', name: '211', short: 'Local help by phone or web',
+    phone: '211', url: 'https://www.211.org/', action: 'Open 211'
+  },
+  {
+    id: 'findhelp', category: 'all', name: 'Findhelp', short: 'Search free and reduced-cost programs',
+    url: 'https://www.findhelp.org/', action: 'Search programs'
+  },
+  {
+    id: 'hud', category: 'shelter', name: 'HUD Help', short: 'Housing and shelter resources',
+    url: 'https://www.hud.gov/housingcounseling', action: 'Find housing help'
+  },
+  {
+    id: 'feeding-america', category: 'food', name: 'Feeding America', short: 'Find a nearby food bank',
+    url: 'https://www.feedingamerica.org/find-your-local-foodbank', action: 'Find food'
+  },
+  {
+    id: 'usda-food', category: 'food', name: 'USDA Food Help', short: 'Food programs and benefit information',
+    url: 'https://www.fns.usda.gov/national-hunger-hotline', action: 'Get food help'
+  },
+  {
+    id: 'hrsa', category: 'health', name: 'Health Centers', short: 'Low-cost community health care',
+    url: 'https://findahealthcenter.hrsa.gov/', action: 'Find a clinic'
+  },
+  {
+    id: 'samhsa', category: 'health', name: 'Mental Health Help', short: 'Treatment and support locator',
+    phone: '1-800-662-4357', url: 'https://findtreatment.gov/', action: 'Find treatment'
+  },
+  {
+    id: 'benefits-gov', category: 'benefits', name: 'USA.gov Benefits', short: 'Government benefit programs',
+    url: 'https://www.usa.gov/benefits', action: 'See benefits'
+  },
+  {
+    id: 'snap', category: 'benefits', name: 'SNAP', short: 'Food benefit information by state',
+    url: 'https://www.fns.usda.gov/snap/state-directory', action: 'Find SNAP office'
+  },
+  {
+    id: 'career-one-stop', category: 'jobs', name: 'American Job Centers', short: 'Free job and training help',
+    url: 'https://www.careeronestop.org/LocalHelp/AmericanJobCenters/american-job-centers.aspx', action: 'Find job help'
+  },
+  {
+    id: 'lawhelp', category: 'legal', name: 'LawHelp', short: 'Free legal help by state',
+    url: 'https://www.lawhelp.org/', action: 'Find legal aid'
+  },
+  {
+    id: 'va', category: 'all', name: 'Veterans Help', short: 'Housing, health, and crisis support',
+    phone: '1-877-424-3838', url: 'https://www.va.gov/homeless/', action: 'Get veteran help'
+  },
+  {
+    id: 'libraries', category: 'all', name: 'Public Libraries', short: 'Internet, charging, restrooms, and local help',
+    mapQuery: 'public library', action: 'Find a library'
+  },
+  {
+    id: 'community-fridge', category: 'food', name: 'Community Fridges', short: 'Search nearby free community food',
+    mapQuery: 'community fridge free food', action: 'Search nearby'
+  },
+  {
+    id: 'showers-map', category: 'showers', name: 'Showers Nearby', short: 'Search local day centers and shower programs',
+    mapQuery: 'homeless day center showers', action: 'Search nearby'
+  },
+  {
+    id: 'transit-map', category: 'transport', name: 'Ride Help Nearby', short: 'Search local transportation programs',
+    mapQuery: 'free transportation assistance social services', action: 'Search nearby'
+  }
+];
+
+export const quickQuestions = [
+  'Food near me',
+  'Shelter tonight',
+  'Free clinic',
+  'Showers near me',
+  'Help with SNAP',
+  'Call 211'
 ];
