@@ -4,6 +4,6 @@
   "start_url": "./",
   "display": "standalone",
   "background_color": "#ffffff",
-  "theme_color": "#123b68",
-  "description": "Find trusted community help across the United States."
+  "theme_color": "#155f4a",
+  "description": "Find trusted community help and organize a resource plan."
 }

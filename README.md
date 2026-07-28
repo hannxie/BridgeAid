@@ -1,28 +1,313 @@
-# BridgeAid Final — Live Search Edition
+# BridgeAid
 
-BridgeAid is a no-build static web application for finding community assistance in the United States.
+BridgeAid is a privacy-oriented, no-build web application for finding free and reduced-cost community support in the United States. This repository extends the existing BridgeAid project in place; it does not replace the project or create a separate application.
 
-## What is now real
+The app now has two experiences in one shared interface:
 
-The search form performs a live two-step query:
+- **I need help** (`self`) prioritizes immediate actions, plain language, urgent categories, and at most a few next steps.
+- **I’m helping someone** (`helper`) adds optional guided intake, resource comparison, status tracking, notes, and a printable resource plan.
 
-1. Nominatim converts a U.S. city, ZIP code, or address into coordinates.
-2. Overpass API searches OpenStreetMap within roughly 30 km for mapped social facilities, food banks, shelters, community centers, clinics, nonprofits, and government service offices.
+Every real-world resource shown by BridgeAid has a traceable source. Availability and eligibility are never guaranteed.
 
-Results are rendered inside BridgeAid with available name, address, phone, website, opening hours, service type, distance, directions, and the original OpenStreetMap record. National official directories remain below the live results as reliable fallback resources.
+## Repository assessment
 
-## Run
+The original project was a static HTML/CSS/JavaScript progressive web app with:
 
-For best results, serve the folder over HTTP rather than opening it with `file://`:
+- Manual city, address, or ZIP search
+- Optional browser geolocation
+- Client-side Nominatim geocoding
+- Client-side OpenStreetMap Overpass resource discovery
+- Category and keyword matching
+- National fallback resources
+- English, Spanish, and Simplified Chinese labels
+- Saved resources in browser storage
+- 911, 988, and 211 links
+- A service worker for offline assets
+- Responsive and reduced-motion CSS
+
+The original architecture used one large `js/app.js` file. It had no automated tests, server, database, structured resource normalization, cache-first search, two-mode state, helper plans, eligibility rules engine, schedule parser, registration validation, background jobs, or authenticated staff tools. Exact GPS coordinates were also written to browser storage.
+
+The implementation kept the no-build static architecture and existing resource records, then extracted testable service modules. Exact GPS coordinates are no longer persisted.
+
+## Implemented stages
+
+1. **Assessment and stabilization** — preserved the existing dataset, search, language, emergency, and offline foundations.
+2. **Shared modes** — added the first-visit selector, `bridgeaid-mode` persistence, and an always-available header switcher.
+3. **Self and helper interfaces** — added urgent self-service categories, helper intake, plans, comparison, notes, statuses, copy, print, remove, and clear.
+4. **Resource foundation** — added resource normalization, source evidence, duplicate merging, filtering, ranking, and a persistent device-local search cache.
+5. **Location foundation** — added 1/5/10/25-mile search radiuses, ambiguity/error handling, geographic ranking, manual fallback, and non-persistent GPS coordinates.
+6. **Schedules** — added deterministic recurring-schedule parsing, next-event calculation, time-zone formatting, stale/uncertain states, and conflict preservation.
+7. **Eligibility** — added relevant-question selection, deterministic rule evaluation, household-size income tables, explainable results, and transient answers.
+8. **Registration** — added HTTPS/official-domain validation, safe instructions, calling scripts, and explicit confirmation/authorization gates.
+9. **Administration foundation** — added a database migration, authorization guard, audited admin action model, and retryable background-job model without exposing a public dashboard.
+10. **Hardening** — added 41 deterministic tests, HTML escaping, safe links, phone sanitization, local-storage failure handling, offline states, and responsive browser checks.
+
+## User modes
+
+On the first visit, BridgeAid asks:
+
+> How are you using BridgeAid?
+
+The choice is stored under `bridgeaid-mode` and validated as either `self` or `helper`. Switching modes does not change `bridgeaid-location`, saved resources, or the other mode’s data.
+
+### Self mode
+
+Self mode uses the heading “What do you need right now?” and puts urgent categories first:
+
+- Food today
+- Sleep tonight
+- Safe place
+- Health care
+- Shower or laundry
+- Transportation
+- Benefits
+- Jobs
+- Legal help
+
+Resource actions prioritize call, directions, and the official website. Empty facts are omitted. Uncertain schedules tell the user to call ahead.
+
+### Helper mode
+
+Helper mode uses the heading “Help someone find support.” It includes an optional intake that does not request a name or highly sensitive identifiers. Immediate need and location become required only when a resource search is submitted.
+
+The helper plan supports:
+
+- Selecting and removing resources
+- Comparing up to three resources
+- Status: Not contacted, Called, Confirmed, or Unavailable
+- A short local note
+- Phone, official link, directions, eligibility summary, registration information, and documents
+- Plain-text copy
+- Printing with `window.print()`
+- Clearing the complete helper intake and plan
+
+The safety-today response does not hide ordinary resources. Choosing “Not safe tonight” adds visible 911 and 988 guidance.
+
+## BridgeAI architecture
+
+Users see one BridgeAI assistant. `js/services/orchestrator.js` detects intent and delegates to modular services:
+
+```text
+BridgeAI orchestrator
+├── Location and Resource Finder
+├── Hours and Event Verification
+├── Eligibility Assistant
+├── Registration Assistant
+└── Internet Discovery foundation
+```
+
+The current browser implementation is deterministic and source-bound; it does not call a generative AI API. It returns partial cached/static results when live discovery fails and does not invent missing facts.
+
+Relevant files:
+
+- `js/services/orchestrator.js`
+- `js/services/location-service.js`
+- `js/services/schedule-service.js`
+- `js/services/eligibility-service.js`
+- `js/services/registration-service.js`
+- `js/services/resource-service.js`
+
+## Resource model and persistence
+
+`normalizeResource()` keeps older records usable while supporting structured fields such as organization/program names, coordinates, schedules, eligibility rules, documents, accessibility, languages, transportation, source URLs, verification status, confidence, and conflicts.
+
+The existing national records remain in `data/resources.js`.
+
+### Cache-first search
+
+1. Build a key from the general location, category, and radius.
+2. Render a saved result immediately when available.
+3. If online, geocode the location and query OpenStreetMap.
+4. Normalize and merge duplicate results without losing source URLs.
+5. Rank by relevance, distance, availability, and source completeness.
+6. Save the refreshed result in `bridgeaid-resource-cache`.
+7. Keep the saved result if geocoding or live discovery fails.
+
+OpenStreetMap data is community-maintained and explicitly labeled for confirmation.
+
+### Future server database
+
+`migrations/001_resource_foundation.sql` defines the production-oriented foundation for:
+
+- Resources
+- Supporting sources
+- Conflicting facts
+- Correction reports
+- Background jobs
+- Administrative audit logs
+
+The migration is **not executed by the current static app**. There is no production database in this repository.
+
+## Storage and privacy
+
+BridgeAid may store these values in the current browser profile:
+
+| Key | Purpose | Deletion |
+| --- | --- | --- |
+| `bridgeaid-mode` | Self/helper preference | Switch mode or clear site data |
+| `bridgeaid-location` | General search location | Privacy page |
+| `bridgeaid-helper-intake` | Optional helper constraints and notes | Clear intake/plan or Privacy page |
+| `bridgeaid-helper-plan` | Selected resources, status, and notes | Clear this plan or Privacy page |
+| `bridgeaid-resource-cache` | Faster repeated/offline searches | Privacy page |
+| `bridgeaid-saved-searches` | Recent general search locations | Privacy page |
+| `ba-saved` | Saved resource identifiers | Clear site data |
+| `ba-lang` | Language preference | Clear site data |
+
+Not stored by default:
+
+- Exact GPS coordinates
+- Eligibility answers
+- Names of assisted people
+- Social Security numbers
+- Medical-record numbers
+- Immigration-document numbers
+- Banking information
+- Passwords
+- Identification photographs
+
+Browser storage is not encrypted and is not a secure case-management system. Anyone with access to the device and browser profile may be able to read helper notes. The app does not send notes or eligibility answers to resource organizations.
+
+## Administrative and backend security
+
+No administrative UI is shipped publicly because the repository has no authentication provider or backend runtime. The future server model in `server/services/admin-service.js` rejects unauthenticated and non-admin sessions and records audited changes. `server/services/background-job-service.js` models bounded retries and failure history.
+
+Before production administration can be enabled, implement:
+
+- Server-hosted authentication and role authorization
+- CSRF protection for state-changing operations
+- A real database connection and migration runner
+- Rate limits and request validation
+- Secure session management
+- Audit-log retention and review
+- Server-side geocoding/discovery/verification proxies
+
+Do not add a client-side “admin password”; it would not secure the dashboard.
+
+## Environment variables
+
+The current static application requires no secrets.
+
+`.env.example` documents reserved backend settings:
+
+- `DATABASE_URL`
+- `SESSION_SECRET`
+- `ADMIN_IDENTITY_PROVIDER_ISSUER`
+- `ADMIN_IDENTITY_PROVIDER_CLIENT_ID`
+- `ADMIN_IDENTITY_PROVIDER_CLIENT_SECRET`
+- `GEOCODING_API_KEY`
+- `VERIFICATION_PROVIDER_API_KEY`
+
+Never put these values in `js/`, `index.html`, or another browser-delivered file.
+
+## Run locally
+
+Python:
 
 ```bash
-python3 -m http.server 8080
+python -m http.server 8080
 ```
 
 Then open `http://localhost:8080`.
 
-You can also deploy the folder unchanged to GitHub Pages, Netlify, Vercel, Cloudflare Pages, or any static host.
+The package script provides the same command:
 
-## Important limitations
+```bash
+npm start
+```
 
-OpenStreetMap is community-maintained, so coverage and fields such as opening hours vary by city and organization. Always call or check the provider website before visiting. Live search also depends on public Nominatim and Overpass availability and internet access.
+On Windows systems that block PowerShell script shims, use:
+
+```powershell
+npm.cmd start
+```
+
+Opening `index.html` through `file://` is not supported because JavaScript modules and the service worker require HTTP.
+
+## Tests
+
+Run:
+
+```bash
+npm test
+```
+
+or:
+
+```bash
+node --test
+```
+
+The deterministic suite covers:
+
+- Mode validation, persistence, switching, and location preservation
+- Storage corruption and blocked-storage behavior
+- Resource normalization, caching, filtering, ranking, source attribution, and duplicate merging
+- Offline cache reuse
+- Weekly, monthly, last-weekday, and alternating schedules
+- Schedule conflict and uncertainty handling
+- Time-zone and daylight-saving behavior
+- Eligibility questions, summaries, missing information, exceptions, explainable decisions, and household income tables
+- Registration-link validation and submission authorization
+- Geocoding success, ambiguity, empty result, and API failure
+- Radius queries, geographic distance, and OpenStreetMap normalization
+- HTML escaping, URL safety, and phone sanitization
+- Helper plan creation, status, notes, removal, and clearing
+- Mode-aware orchestration
+- Server-side admin authorization and audit history
+- Background-job retries
+- Required UI/privacy copy and responsive CSS
+
+## Manual verification
+
+1. Clear this site’s local browser data and reload. Confirm the mode selector appears.
+2. Choose “I need help,” reload, and confirm the choice persists.
+3. Enter a general location, switch to helper mode, switch back, and confirm the location remains.
+4. Confirm self mode shows urgent categories and call/directions/official-site actions.
+5. Switch to helper mode and complete only immediate need and location.
+6. Choose “Not safe tonight” and confirm 911/988 guidance appears without hiding resources.
+7. Add a resource to the plan, compare resources, update status, add a note, copy, print, remove, and clear.
+8. Open requirements, eligibility, and registration panels. Confirm they state uncertainty and do not promise service.
+9. Disable the network and repeat a previously cached search. Confirm saved/static results remain.
+10. Test keyboard-only navigation, visible focus, 200% browser zoom, and a screen reader.
+11. Test widths of 320 px, 768 px, and desktop.
+12. Inspect the console during critical workflows and confirm there are no uncaught errors.
+
+Automated in-app browser verification was performed at 320 px, 768 px, and 1440 px. It confirmed no horizontal overflow, 44-pixel interactive targets, persistent mode switching, location preservation, helper-plan creation/status/note/clear workflows, and no console errors.
+
+## Accessibility decisions
+
+- Semantic buttons, links, headings, forms, details, lists, table, dialog, and aside regions
+- Skip link and persistent visible focus indicators
+- 44-pixel minimum interactive targets
+- Status text/icons in addition to color
+- Live regions for errors, offline state, cache state, and chat responses
+- Mobile-first layouts and no horizontal overflow at tested widths
+- Reduced-motion support
+- Print-specific helper-plan layout
+- Escaped user-provided content before DOM insertion
+
+Translations are interface summaries, not replacements for official legal or eligibility language. Official sources remain linked.
+
+## Known limitations and development-only features
+
+- Live Nominatim and Overpass calls still run in the browser. A production deployment should proxy and rate-limit them server-side.
+- OpenStreetMap coverage, hours, phone numbers, and websites vary by area.
+- The structured schedule and eligibility services are ready for verified records, but existing legacy records generally contain prose rather than machine-readable rules.
+- No generative model or official-page extraction provider is configured.
+- No background worker executes queued jobs.
+- No persistent server database is connected.
+- The SQL migration, admin service, and job service are development foundations only.
+- No authenticated administrative dashboard is exposed.
+- No online form is submitted by BridgeAid.
+- Correction actions currently open the best available source; a production correction endpoint requires a backend.
+- Browser storage is device-local, unencrypted, and unsuitable for sensitive case management.
+- Live availability, capacity, beds, supplies, appointments, funding, and final eligibility cannot be guaranteed.
+
+## Recommended next steps
+
+1. Add a small authenticated backend and run `migrations/001_resource_foundation.sql`.
+2. Proxy geocoding, discovery, source verification, and correction reports through validated rate-limited endpoints.
+3. Add reviewed connectors for official government and organization sources.
+4. Populate structured schedules and eligibility rules only from traceable official sources.
+5. Add authenticated, server-authorized staff review screens after identity and audit infrastructure is available.
+6. Run formal assistive-technology testing with NVDA, VoiceOver, and keyboard-only users.
