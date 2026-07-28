@@ -15,12 +15,28 @@ import {
   cacheKey,
   readCachedSearch,
   writeCachedSearch,
-  mergeDuplicates
+  mergeDuplicates,
+  sortResources
 } from './services/resource-service.js';
 import {
   geocodeLocation,
-  fetchNearbyResources
+  fetchNearbyResources,
+  geocodeResourceAddresses
 } from './services/location-service.js';
+import {
+  formatScheduleTime,
+  resourceScheduleState,
+  weeklyScheduleRows
+} from './services/schedule-service.js';
+import {
+  enrichWithConfiguredPlaces,
+  placesApiKey
+} from './services/places-enrichment-service.js';
+import {
+  createRequestCoordinator,
+  memoizeByKey,
+  storedFirstResponse
+} from './services/performance-service.js';
 import {
   localProgramForResource,
   localEligibilityQuestions,
@@ -115,6 +131,7 @@ const state = {
   radiusValue: 5,
   unit: ['mi', 'km'].includes(safeStorageGet(STORAGE.unit, defaultUnit)) ? safeStorageGet(STORAGE.unit, defaultUnit) : defaultUnit,
   travelMode: 'walking',
+  sortBy: 'relevance',
   searched: false,
   filters: {
     openNow: false,
@@ -123,11 +140,14 @@ const state = {
     noId: false,
     noRegistration: false,
     accessible: false,
-    language: ''
+    language: '',
+    verifiedEligibility: false
   },
   saved: new Set(safeArray(STORAGE.saved)),
   liveResults: [],
+  storedResults: sourceResources,
   resolvedLocation: '',
+  activeSearchKey: '',
   loading: false,
   errorKey: '',
   errorText: '',
@@ -150,8 +170,10 @@ const state = {
     started: false
   },
   chatOpen: false,
+  chatLoading: false,
   chatMessages: [],
-  chatContext: {}
+  chatContext: {},
+  chatMetrics: { lastResponseMs: null, answerComputeMs: null, strategy: 'stored-first' }
 };
 
 function safeObject(key) {
@@ -165,7 +187,15 @@ function safeArray(key) {
 }
 
 const app = document.querySelector('#app');
-const tr = (key, variables = {}, language = state.lang) => translate(language, key, variables);
+const translationCache = memoizeByKey(500);
+const responseCache = memoizeByKey(100);
+const searchCoordinator = createRequestCoordinator();
+const enrichmentCoordinator = createRequestCoordinator();
+const tr = (key, variables = {}, language = state.lang) => {
+  const cacheKey = `${language}|${key}|${JSON.stringify(variables)}`;
+  if (translationCache.has(cacheKey)) return translationCache.get(cacheKey);
+  return translationCache.set(cacheKey, translate(language, key, variables));
+};
 const esc = escapeHtml;
 const attr = escapeHtml;
 const safeUrl = safeExternalUrl;
@@ -243,9 +273,11 @@ function staticMatches() {
   const wanted = state.category && !['all', 'other'].includes(state.category)
     ? [state.category]
     : detectCategories(state.otherNeed);
-  let rows = sourceResources.map(resource => normalizeResource(resource, state.lang));
+  let rows = state.storedResults
+    .filter(resource => String(resource.id) !== '211')
+    .map(resource => normalizeResource(resource, state.lang));
   rows = rows.filter(resource => {
-    const original = sourceResources.find(item => String(item.id) === resource.id);
+    const original = state.storedResults.find(item => String(item.id) === resource.id);
     const isLocationBound = Boolean(
       original?.serviceAreas?.length
       || original?.serviceAreaZipRanges?.length
@@ -264,15 +296,22 @@ function staticMatches() {
 function allResults() {
   if (!state.searched) return [];
   const combined = mergeDuplicates([...state.liveResults, ...staticMatches()])
-    .map(resource => normalizeResource(resource, state.lang));
-  return filterResources(combined, {
+    .map(resource => {
+      const normalized = normalizeResource(resource, state.lang);
+      return {
+        ...normalized,
+        localEligibilityVerified: Boolean(localProgramForResource(normalized, state.location)?.localEligibilityVerified)
+      };
+    });
+  const filtered = filterResources(combined, {
     ...state.filters,
     radius: effectiveRadiusMiles()
   });
+  return sortResources(filtered, state.sortBy);
 }
 
 function resourceById(id) {
-  return mergeDuplicates([...state.liveResults, ...sourceResources])
+  return mergeDuplicates([...state.liveResults, ...state.storedResults])
     .map(resource => normalizeResource(resource, state.lang))
     .find(resource => resource.id === id);
 }
@@ -335,9 +374,11 @@ function header() {
 }
 
 function communityLink() {
-  return `<div class="safety" aria-label="${attr(tr('communitySupport'))}">
-    <span><strong>211</strong> ${tr('communitySupport')}</span>
-    <a class="call-211" href="tel:211" aria-label="${attr(tr('call211'))}"><span aria-hidden="true">☎</span> ${tr('call211')}</a>
+  return `<div class="hero-211">
+    <a class="call-211" href="tel:211" aria-describedby="call-211-description" title="${attr(tr('call211Tooltip'))}">
+      <span aria-hidden="true">☎</span> ${tr('call211')}
+    </a>
+    <span class="sr-only" id="call-211-description">${tr('call211Tooltip')}</span>
   </div>`;
 }
 
@@ -346,7 +387,7 @@ function statusMessages() {
     ${state.offline ? `<div class="offline-state">◉ ${tr('offline')}</div>` : ''}
     ${state.noticeKey ? `<div class="cache-state">${tr(state.noticeKey)}</div>` : ''}
     ${state.storageWarning ? `<div class="error-state">${tr('storageBlocked')}</div>` : ''}
-    ${state.errorKey ? `<div class="error-state">${tr(state.errorKey)}</div>` : ''}
+    ${state.errorKey ? `<div class="error-state">${tr(state.errorKey)}${state.errorKey === 'searchUnavailable' ? ` <button class="ghost retry-search" data-retry-search>${tr('retrySearch')}</button>` : ''}</div>` : ''}
     ${state.errorText ? `<div class="error-state">${esc(state.errorText)}</div>` : ''}
   </div>`;
 }
@@ -475,11 +516,11 @@ function homePage() {
   return `<main id="main">
     <section class="hero ${helper ? 'helper-hero' : ''}">
       <div class="wrap">
+        ${communityLink()}
         <span class="eyebrow">${helper ? tr('helperEyebrow') : tr('selfEyebrow')}</span>
         <h1>${helper ? tr('helperHero') : tr('selfHero')}</h1>
         <p>${helper ? tr('helperSub') : tr('selfSub')}</p>
         ${helper ? '' : searchBox()}
-        ${communityLink()}
       </div>
     </section>
     ${statusMessages()}
@@ -500,6 +541,7 @@ function filtersPanel() {
       ${checkbox('noId', 'filterNoId')}
       ${checkbox('noRegistration', 'filterNoRegistration')}
       ${checkbox('accessible', 'filterAccessible')}
+      ${checkbox('verifiedEligibility', 'filterVerifiedEligibility')}
       <label><span>${tr('filterLanguage')}</span><input data-filter-text="language" value="${attr(state.filters.language)}" placeholder="${attr(tr('filterLanguagePlaceholder'))}"></label>
       <button class="ghost" data-clear-filters>${tr('clearFilters')}</button>
     </div>
@@ -507,26 +549,57 @@ function filtersPanel() {
 }
 
 function scheduleDisplay(resource) {
-  if (resource.hours) {
-    return {
-      label: resource.scheduleLabel === 'published' ? tr('schedulePublished') : tr('typicalHours'),
-      value: resource.hours
-    };
-  }
-  return {
-    label: resource.scheduleVerificationStatus === 'researching' ? tr('scheduleResearching') : tr('scheduleUncertain'),
-    value: tr('availabilityConfirm')
-  };
+  const status = resourceScheduleState(resource);
+  if (resource.scheduleVerificationStatus === 'researching') return { label: tr('scheduleResearching'), status };
+  if (status.code === 'hours_not_listed') return { label: tr('hoursNotPubliclyListed'), status };
+  if (status.code === 'appointment_only') return { label: tr('appointmentOnly'), status };
+  if (status.code === 'online_available') return { label: tr('onlineAvailable'), status };
+  return { label: tr('schedulePublished'), status };
 }
 
 function availabilityText(resource) {
-  const value = String(resource.availabilityStatus || '').toLowerCase();
-  if (value === 'open now') return tr('openNow');
-  if (value === 'closed') return tr('closed');
-  if (value === 'opening soon') return tr('openingSoon');
-  if (value === 'available today') return tr('availableToday');
-  if (value === 'upcoming event') return tr('upcomingEvent');
-  return tr('availabilityConfirm');
+  const status = resourceScheduleState(resource);
+  if (resource.temporaryClosure) return tr('temporaryClosure');
+  if (status.code === 'open_now') return tr('openNow');
+  if (status.code === 'opens_at') return tr('opensAt', { time: formatScheduleTime(status.nextOpenTime, state.lang) });
+  if (status.code === 'appointment_only') return tr('appointmentOnly');
+  if (status.code === 'online_available') return tr('onlineAvailable');
+  if (status.code === 'event_today') return tr('upcomingEvent');
+  if (status.code === 'hours_not_listed') return tr('hoursNotPubliclyListed');
+  return tr('closed');
+}
+
+function weeklyHoursBlock(resource) {
+  const rows = weeklyScheduleRows(resource, state.lang);
+  const hasKnownRows = rows.some(row => row.known);
+  const source = safeUrl(resource.hoursSourceUrl || resource.scheduleSourceUrl);
+  const exceptions = (resource.holidayHours || []).filter(exception => exception.date);
+  const unknownScheduleLabel = resource.appointmentOnly
+    ? tr('appointmentOnly')
+    : resource.onlineAlwaysAvailable
+      ? tr('onlineAvailable')
+      : tr('hoursNotPubliclyListed');
+  return `<div class="weekly-hours">
+    ${hasKnownRows ? rows.map(row => `<div class="hours-row ${row.current ? 'current-day' : ''}">
+      <strong>${tr(`day${row.day[0].toUpperCase()}${row.day.slice(1)}`)}</strong>
+      <span>${!row.known
+        ? tr('hoursNotPubliclyListed')
+        : row.closed
+          ? tr('closed')
+          : row.periods.map(period => (
+            period.open === '00:00' && period.close === '24:00'
+              ? tr('open24Hours')
+              : esc(period.label)
+          )).join(', ')}</span>
+    </div>`).join('') : `<p class="hours-unlisted">${unknownScheduleLabel}</p>`}
+    ${resource.hoursNote ? `<p class="hours-note">${esc(resource.hoursNote)}</p>` : ''}
+    ${resource.specialHours.length ? `<div class="special-hours"><strong>${tr('specialHours')}</strong><ul>${resource.specialHours.map(item => `<li>${esc(item)}</li>`).join('')}</ul></div>` : ''}
+    ${exceptions.length ? `<details class="holiday-hours"><summary>${tr('holidayHours')}</summary><ul>${exceptions.map(item => `<li>${esc(item.date)} — ${esc(item.label || (item.closed ? tr('closed') : tr('specialHours')))}</li>`).join('')}</ul></details>` : ''}
+    <div class="hours-evidence">
+      ${source ? `<a href="${attr(source)}" target="_blank" rel="noopener noreferrer">${tr('hoursSource')} ↗</a>` : ''}
+      ${resource.hoursLastVerified ? `<span>${tr('lastVerified')}: ${esc(resource.hoursLastVerified)}</span>` : ''}
+    </div>
+  </div>`;
 }
 
 function verificationText(resource) {
@@ -590,14 +663,14 @@ function resourceCard(raw, options = {}) {
   return `<article class="resource-card" data-resource-card="${attr(resource.id)}">
     <div class="card-top">
       <span class="tag">${categoryIcon(resource.category)} ${categoryLabel(resource.category)}</span>
-      <span class="verification-badge ${resource.hours ? 'confirmed' : 'uncertain'}"><span aria-hidden="true">${resource.hours ? '✓' : '!'}</span>${schedule.label}</span>
+      <span class="verification-badge ${schedule.status.code === 'hours_not_listed' ? 'uncertain' : 'confirmed'}"><span aria-hidden="true">${schedule.status.code === 'hours_not_listed' ? '!' : '✓'}</span>${schedule.label}</span>
     </div>
     <div><h3>${esc(resource.name)}</h3>${resource.programName ? `<p class="program-name">${esc(resource.programName)}</p>` : ''}</div>
     ${resource.description ? `<p class="description">${esc(resource.description)}</p>` : ''}
     <dl class="resource-meta">
       <dt>${tr('address')}</dt><dd>${esc(address)}</dd>
       ${walkingDetails(resource) ? `<dt>${tr('distance')}</dt><dd>${esc(walkingDetails(resource))}</dd>` : ''}
-      <dt>${tr('hours')}</dt><dd><strong>${schedule.label}:</strong> ${esc(schedule.value)}</dd>
+      <dt>${tr('hours')}</dt><dd>${weeklyHoursBlock(resource)}</dd>
       <dt>${tr('availability')}</dt><dd>${availabilityText(resource)}</dd>
       <dt>${tr('eligibilitySummary')}</dt><dd>${esc(localProgram?.localEligibilityVerified ? localProgram.eligibilitySummary : tr('eligibilityLocalUnknown'))}</dd>
       <dt>${tr('registrationRequirement')}</dt><dd>${esc(resource.registrationRequirement || tr('registrationUseContact'))}</dd>
@@ -649,7 +722,7 @@ function findPage() {
     <div class="page-head">
       <div><span class="eyebrow">${tr('selfEyebrow')}</span><h1>${tr('searchResults')}</h1>
         ${state.searched ? `<p>${tr('resultsFor', { need: searchNeed(), location: state.location })}</p>` : `<p>${tr('noHomeResources')}</p>`}
-      </div>${communityLink()}
+      </div>
     </div>
     ${statusMessages()}
     ${searchBox(true)}
@@ -658,7 +731,13 @@ function findPage() {
     ${comparisonPanel(resources)}
     <div class="${state.mode === 'helper' && state.searched ? 'results-layout' : ''}">
       <section aria-labelledby="resource-list-title">
-        ${state.searched ? `<div class="section-head"><h2 id="resource-list-title">${tr('resultsCount', { count: resources.length })}</h2><small>${tr('everyResultSourced')}</small></div>
+        ${state.searched ? `<div class="section-head results-heading"><div><h2 id="resource-list-title">${tr('resultsCount', { count: resources.length })}</h2><small>${tr('everyResultSourced')}</small></div>
+          <label class="sort-control"><span>${tr('sortBy')}</span><select id="sortBy">
+            <option value="nearest" ${state.sortBy === 'nearest' ? 'selected' : ''}>${tr('sortNearest')}</option>
+            <option value="farthest" ${state.sortBy === 'farthest' ? 'selected' : ''}>${tr('sortFarthest')}</option>
+            <option value="relevance" ${state.sortBy === 'relevance' ? 'selected' : ''}>${tr('sortRelevant')}</option>
+            <option value="openSoonest" ${state.sortBy === 'openSoonest' ? 'selected' : ''}>${tr('sortOpenSoonest')}</option>
+          </select></label></div>
           <div class="resource-list">${resources.length ? resources.map(resource => resourceCard(resource)).join('') : `<div class="empty-state">${tr('noResults')}</div>`}</div>`
           : `<div class="empty-state">${tr('noHomeResources')}</div>`}
       </section>
@@ -723,10 +802,12 @@ function planItem(item) {
 }
 
 function savedPage() {
-  const available = mergeDuplicates([...state.liveResults, ...sourceResources]).map(resource => normalizeResource(resource, state.lang));
+  const available = mergeDuplicates([...state.liveResults, ...sourceResources])
+    .filter(resource => String(resource.id) !== '211')
+    .map(resource => normalizeResource(resource, state.lang));
   const saved = available.filter(resource => state.saved.has(resource.id));
   return `<main id="main" class="wrap section page">
-    <div class="page-head"><h1>${tr('savedTitle')}</h1>${communityLink()}</div>
+    <div class="page-head"><h1>${tr('savedTitle')}</h1></div>
     <div class="resource-list">${saved.length ? saved.map(resource => resourceCard(resource)).join('') : `<div class="empty-state">${tr('savedEmpty')}</div>`}</div>
   </main>`;
 }
@@ -743,7 +824,6 @@ function privacyPage() {
       <article><h2>${tr('privacyReportsTitle')}</h2><p>${tr('privacyReportsText')}</p><p><strong>${state.corrections.length}</strong> ${tr('reportQueued')}</p></article>
     </div>
     <div class="notice"><strong>${tr('availabilityConfirm')}.</strong> ${tr('privacyConfirm')}</div>
-    ${communityLink()}
   </main>`;
 }
 
@@ -926,15 +1006,17 @@ function applicationMethods(methods = []) {
 function eligibilityResult(result, resource) {
   if (!result) return '';
   const source = safeUrl(result.program?.eligibilitySourceUrl || resource.sourceUrls[0]);
+  const noPublishedRules = result.status === 'Unable to determine'
+    && result.missing?.some(item => String(item).includes('eligibility rules'));
   return `<section class="eligibility-result" aria-live="polite">
     <h2>${tr(statusTranslation(result.status))}</h2>
-    <p>${result.status === 'Unable to determine' ? tr('noLocalRules') : tr('nearbyRulesDiffer')}</p>
-    ${eligibilityDetailsBlock(resource)}
+    <p>${noPublishedRules ? tr('eligibilityNotPubliclyListed') : result.status === 'Unable to determine' ? tr('noLocalRules') : tr('nearbyRulesDiffer')}</p>
+    ${result.program?.localEligibilityVerified ? eligibilityDetailsBlock(resource) : ''}
     ${result.passed?.length ? `<h3>${tr('satisfied')}</h3><ul>${result.passed.map(item => `<li>${tr('requirementMet', { requirement: tr(eligibilityFieldKey(item.field)) })}</li>`).join('')}</ul>` : ''}
     ${result.failed?.length ? `<h3>${tr('notSatisfied')}</h3><ul>${result.failed.map(item => `<li>${tr('requirementNotMet', { requirement: tr(eligibilityFieldKey(item.field)) })}</li>`).join('')}</ul>` : ''}
     ${result.missing?.length ? `<h3>${tr('missingInfo')}</h3><ul>${result.missing.map(item => `<li>${esc(eligibilityMissingLabel(item))}</li>`).join('')}</ul>` : ''}
-    ${resource.eligibilityExceptions?.length ? `<h3>${tr('exceptions')}</h3><ul>${resource.eligibilityExceptions.map(item => `<li>${esc(item)}</li>`).join('')}</ul>` : ''}
-    ${resource.requiredDocuments?.length ? `<h3>${tr('documents')}</h3><ul>${resource.requiredDocuments.map(item => `<li>${esc(item)}</li>`).join('')}</ul>` : ''}
+    ${result.program?.localEligibilityVerified && resource.eligibilityExceptions?.length ? `<h3>${tr('exceptions')}</h3><ul>${resource.eligibilityExceptions.map(item => `<li>${esc(item)}</li>`).join('')}</ul>` : ''}
+    ${result.program?.localEligibilityVerified && resource.requiredDocuments?.length ? `<h3>${tr('documents')}</h3><ul>${resource.requiredDocuments.map(item => `<li>${esc(item)}</li>`).join('')}</ul>` : ''}
     <h3>${tr('nextSteps')}</h3><p>${tr('confirmOrganization')}</p>
     <p><strong>${tr('lastVerified')}:</strong> ${esc(result.program?.eligibilityLastVerified || tr('nonePublished'))}</p>
     ${source ? `<a href="${attr(source)}" target="_blank" rel="noopener noreferrer">${tr('officialSource')} ↗</a>` : ''}
@@ -998,12 +1080,17 @@ function requirementsPanel() {
   if (state.panel !== 'requirements' || !resource) return '';
   const local = localProgramForResource(resource, state.location);
   const source = safeUrl(local?.eligibilitySourceUrl || resource.sourceUrls[0]);
+  const eligibilityMessage = local?.localEligibilityVerified
+    ? resource.eligibilitySummary
+    : local && !local.eligibilityRules.length
+      ? tr('eligibilityNotPubliclyListed')
+      : tr('noLocalRules');
   return drawer(`<h2 id="panel-title">${tr('requirementsTitle')}</h2>
     <p><strong>${tr('localProgramUsed')}:</strong> ${esc(resource.name)}</p>
     <p><strong>${tr('locationUsed')}:</strong> ${esc(state.location || tr('notEntered'))}</p>
-    <p>${esc(local?.localEligibilityVerified ? resource.eligibilitySummary : tr('noLocalRules'))}</p>
-    ${eligibilityDetailsBlock(resource)}
-    ${resource.requiredDocuments.length ? `<h3>${tr('documents')}</h3><ul>${resource.requiredDocuments.map(item => `<li>${esc(item)}</li>`).join('')}</ul>` : ''}
+    <p>${esc(eligibilityMessage)}</p>
+    ${local?.localEligibilityVerified ? eligibilityDetailsBlock(resource) : ''}
+    ${local?.localEligibilityVerified && resource.requiredDocuments.length ? `<h3>${tr('documents')}</h3><ul>${resource.requiredDocuments.map(item => `<li>${esc(item)}</li>`).join('')}</ul>` : ''}
     <p><strong>${tr('lastVerified')}:</strong> ${esc(local?.eligibilityLastVerified || tr('nonePublished'))}</p>
     ${source ? `<a href="${attr(source)}" target="_blank" rel="noopener noreferrer">${tr('fullRequirements')} ↗</a>` : ''}
     <p class="privacy-notice">${tr('preliminaryOnly')}</p>`);
@@ -1044,18 +1131,32 @@ function drawer(content) {
 function chatRecommendation(resource, language) {
   const normalized = normalizeResource(resource, language);
   const website = safeUrl(normalized.registrationUrl || normalized.officialWebsite || normalized.website);
+  const schedule = resourceScheduleState(normalized);
+  const scheduleText = schedule.code === 'open_now'
+    ? tr('openNow', {}, language)
+    : schedule.code === 'opens_at'
+      ? tr('opensAt', { time: formatScheduleTime(schedule.nextOpenTime, language) }, language)
+      : schedule.code === 'hours_not_listed'
+        ? tr('hoursNotPubliclyListed', {}, language)
+      : schedule.code === 'appointment_only'
+          ? tr('appointmentOnly', {}, language)
+          : schedule.code === 'event_today'
+            ? tr('upcomingEvent', {}, language)
+          : tr('closed', {}, language);
   return `<article class="chat-resource">
     <strong>${esc(normalized.name)}</strong>
-    <span>${esc(normalized.address || translate(language, 'addressUnavailable'))}</span>
-    <span>${translate(language, 'hours')}: ${esc(normalized.hours || translate(language, 'scheduleUncertain'))}</span>
-    ${website ? `<a href="${attr(website)}" target="_blank" rel="noopener noreferrer">${translate(language, normalized.registrationUrl ? 'officialApplication' : 'officialWebsite')} ↗</a>` : ''}
+    <span>${esc(normalized.address || tr('addressUnavailable', {}, language))}</span>
+    <span>${tr('hours', {}, language)}: ${esc(scheduleText)}</span>
+    ${website ? `<a href="${attr(website)}" target="_blank" rel="noopener noreferrer">${tr(normalized.registrationUrl ? 'officialApplication' : 'officialWebsite', {}, language)} ↗</a>` : ''}
   </article>`;
 }
 
 function chat() {
   const opening = state.mode === 'helper' ? tr('assistantHelperOpening') : tr('assistantSelfOpening');
   return `<button class="chat-launcher" data-chat aria-expanded="${state.chatOpen}">${tr('assistantName')} <span aria-hidden="true">${state.chatOpen ? '×' : '✦'}</span></button>
-    ${state.chatOpen ? `<section class="chat-panel" aria-label="${attr(tr('assistantName'))}">
+    ${state.chatOpen ? `<section class="chat-panel" aria-label="${attr(tr('assistantName'))}"
+      data-response-ms="${state.chatMetrics.lastResponseMs === null ? '' : Math.round(state.chatMetrics.lastResponseMs)}"
+      data-response-strategy="${attr(state.chatMetrics.strategy)}">
       <div class="chat-head"><strong>${tr('assistantName')}</strong><small>${tr('assistantSubtitle')}</small></div>
       <div class="chat-messages" aria-live="polite">
         <p class="assistant-message">${opening}</p>
@@ -1063,6 +1164,7 @@ function chat() {
           <p>${esc(message.text)}</p>
           ${message.recommendations?.map(resource => chatRecommendation(resource, message.language || state.lang)).join('') || ''}
         </div>`).join('')}
+        ${state.chatLoading ? `<div class="assistant-message chat-loading" role="status"><span class="spinner" aria-hidden="true"></span>${tr('assistantLoading')}</div>` : ''}
       </div>
       <form id="chatForm"><label class="sr-only" for="chatInput">${tr('assistantName')}</label>
         <input id="chatInput" placeholder="${attr(tr('chatPlaceholder'))}">
@@ -1093,27 +1195,64 @@ function render(options = {}) {
 async function researchMissingSchedules(resources) {
   if (state.offline) return resources;
   const pending = resources.map(resource => (
-    !resource.hours && resource.sourceUrls?.length
+    !resource.weeklyHours && resource.sourceUrls?.length
       ? { ...resource, scheduleVerificationStatus: 'researching' }
       : resource
   ));
   const candidates = pending.filter(resource => resource.scheduleVerificationStatus === 'researching').slice(0, 5);
   if (!candidates.length) return pending;
-  const fetchWithTimeout = (url, options) => fetch(url, { ...options, signal: AbortSignal.timeout(3500) });
-  const checked = await Promise.all(candidates.map(resource => verifyResourceSchedule(resource, fetchWithTimeout)));
+  const checkedResults = await Promise.allSettled(candidates.map(resource => verifyResourceSchedule(resource)));
+  const checked = checkedResults
+    .filter(result => result.status === 'fulfilled')
+    .map(result => result.value);
   const updates = new Map(checked.map(resource => [resource.id, resource]));
   return pending.map(resource => updates.get(resource.id) || resource);
 }
 
-async function searchNearby({ coordinates = null, quiet = false } = {}) {
+async function enrichStoredEvidence(point, { key, location, quiet = false } = {}) {
+  const locationKey = `${Number(point.lat).toFixed(4)},${Number(point.lng).toFixed(4)}`;
+  return enrichmentCoordinator.run(`stored:${locationKey}`, async () => {
+    let updated = await geocodeResourceAddresses(state.storedResults, {
+      origin: point,
+      maximum: 20
+    });
+    const apiKey = placesApiKey();
+    if (apiKey && !state.offline) {
+      const candidates = updated
+        .filter(resource => resource.address && servesLocation(resource, location))
+        .slice(0, 5);
+      const enrichedResults = await Promise.allSettled(
+        candidates.map(resource => enrichWithConfiguredPlaces(resource, { apiKey }))
+      );
+      const enriched = new Map(enrichedResults
+        .filter(result => result.status === 'fulfilled')
+        .map(result => [result.value.id, result.value]));
+      updated = updated.map(resource => enriched.get(resource.id) || resource);
+      updated = await geocodeResourceAddresses(updated, { origin: point, maximum: 20 });
+    }
+    if (key && state.activeSearchKey !== key) return updated;
+    state.storedResults = updated;
+    if (state.searched && !quiet) render();
+    return updated;
+  });
+}
+
+async function performNearbySearch({
+  coordinates = null,
+  quiet = false,
+  key,
+  cache,
+  cached,
+  location,
+  desired,
+  radius
+} = {}) {
+  if (state.activeSearchKey !== key) return state.liveResults;
   state.errorKey = '';
   state.errorText = '';
   state.noticeKey = '';
   state.loading = true;
   if (!quiet) render();
-  const key = cacheKey(state.location, state.category || 'all', effectiveRadiusMiles());
-  const cache = safeObject(STORAGE.cache);
-  const cached = readCachedSearch(cache, key);
   if (cached) {
     state.liveResults = cached.resources;
     state.noticeKey = cached.stale ? 'stale' : '';
@@ -1126,33 +1265,69 @@ async function searchNearby({ coordinates = null, quiet = false } = {}) {
     return state.liveResults;
   }
   try {
-    const point = coordinates || await geocodeLocation(state.location);
+    const point = coordinates || await geocodeLocation(location);
+    if (state.activeSearchKey !== key) return state.liveResults;
     state.coordinates = { lat: point.lat, lng: point.lng };
-    state.resolvedLocation = point.label || state.location;
+    state.resolvedLocation = point.label || location;
+    void enrichStoredEvidence(point, { key, location, quiet });
     let rows = await fetchNearbyResources({
       lat: point.lat,
       lng: point.lng,
-      radius: effectiveRadiusMiles()
+      radius
     });
-    const desired = state.category && !['all', 'other'].includes(state.category)
-      ? [state.category]
-      : detectCategories(state.otherNeed);
     if (desired.length) rows = rows.filter(resource => desired.includes(resource.category));
     rows = rankResources(mergeDuplicates(rows), { categories: desired }).slice(0, 50);
-    rows = await researchMissingSchedules(rows);
-    state.liveResults = rows;
     persist(STORAGE.cache, writeCachedSearch(cache, key, rows));
-    persist(STORAGE.searches, [...new Set([...safeArray(STORAGE.searches), state.location])].slice(-10));
+    persist(STORAGE.searches, [...new Set([...safeArray(STORAGE.searches), location])].slice(-10));
+    if (state.activeSearchKey !== key) return rows;
+    state.liveResults = rows;
     if (cached) state.noticeKey = 'refreshed';
-  } catch (error) {
-    if (error.code === 'AMBIGUOUS_LOCATION') state.errorKey = 'locationAmbiguous';
-    else state.errorKey = 'searchError';
-    if (cached) state.noticeKey = 'cached';
-  } finally {
-    state.loading = false;
     if (!quiet) render();
+    void enrichmentCoordinator.run(`hours:${key}`, async () => {
+      const checked = await researchMissingSchedules(rows);
+      persist(STORAGE.cache, writeCachedSearch(safeObject(STORAGE.cache), key, checked));
+      if (state.activeSearchKey !== key) return checked;
+      state.liveResults = checked;
+      if (!quiet) render();
+      return checked;
+    });
+  } catch (error) {
+    if (state.activeSearchKey === key) {
+      if (error.code === 'AMBIGUOUS_LOCATION') state.errorKey = 'locationAmbiguous';
+      else if (!state.liveResults.length && !staticMatches().length) state.errorKey = 'searchUnavailable';
+      if (cached) state.noticeKey = 'cached';
+    }
+  } finally {
+    if (state.activeSearchKey === key) {
+      state.loading = false;
+      if (!quiet) render();
+    }
   }
   return state.liveResults;
+}
+
+async function searchNearby({ coordinates = null, quiet = false } = {}) {
+  const location = state.location;
+  const category = state.category || 'all';
+  const otherNeed = state.otherNeed;
+  const radius = effectiveRadiusMiles();
+  const desired = category && !['all', 'other'].includes(category)
+    ? [category]
+    : detectCategories(otherNeed);
+  const key = cacheKey(location, category, radius);
+  const cache = safeObject(STORAGE.cache);
+  const cached = readCachedSearch(cache, key);
+  state.activeSearchKey = key;
+  return searchCoordinator.run(key, () => performNearbySearch({
+    coordinates,
+    quiet,
+    key,
+    cache,
+    cached,
+    location,
+    desired,
+    radius
+  }));
 }
 
 async function submitSearch(form) {
@@ -1177,9 +1352,11 @@ async function submitSearch(form) {
   }
   state.searched = true;
   state.page = 'find';
+  state.storedResults = sourceResources;
+  state.liveResults = [];
   persistShared();
   render();
-  await searchNearby();
+  void searchNearby();
 }
 
 function addToPlan(id) {
@@ -1223,10 +1400,15 @@ async function sendChat(form) {
   const input = form.querySelector('#chatInput');
   const message = input.value.trim();
   if (!message) return;
-  const messageLanguage = state.languageExplicit
-    ? (requestedLanguage(message) || state.lang)
-    : detectMessageLanguage(message, state.lang);
+  const responseStartedAt = performance.now();
+  performance.clearMarks?.('bridgeai-response-start');
+  performance.clearMarks?.('bridgeai-response-ready');
+  performance.clearMeasures?.('bridgeai-stored-response');
+  performance.mark?.('bridgeai-response-start');
+  const messageLanguage = requestedLanguage(message)
+    || detectMessageLanguage(message, state.chatContext.language || state.lang);
   state.chatMessages.push({ role: 'user', text: message, language: messageLanguage });
+  state.chatLoading = true;
   const requested = requestedLanguage(message);
   if (requested) {
     state.lang = requested;
@@ -1240,20 +1422,43 @@ async function sendChat(form) {
     state.category = messageCategory;
     state.query = categoryLabel(messageCategory);
   }
-  if (state.location && state.category && (!state.searched || messageLocation || messageCategory)) {
-    state.searched = true;
-    await searchNearby({ quiet: true });
-  }
-  const answer = answerGroundedAssistant({
-    message,
-    selectedLanguage: state.lang,
-    languageExplicit: state.languageExplicit,
-    currentLocation: state.location,
-    resources: mergeDuplicates([...state.liveResults, ...sourceResources]),
-    context: state.chatContext,
-    selectedResource: currentResource(),
-    translate
+  render();
+  await new Promise(resolve => requestAnimationFrame(resolve));
+  const responseKey = [
+    messageLanguage,
+    message.toLowerCase(),
+    state.location.toLowerCase(),
+    state.category,
+    state.chatContext.category || '',
+    state.chatContext.intent || ''
+  ].join('|');
+  const task = storedFirstResponse({
+    answer: () => {
+      if (responseCache.has(responseKey)) return responseCache.get(responseKey);
+      const answer = answerGroundedAssistant({
+        message,
+        selectedLanguage: messageLanguage,
+        languageExplicit: state.languageExplicit,
+        currentLocation: state.location,
+        resources: mergeDuplicates([...state.liveResults, ...state.storedResults])
+          .filter(resource => String(resource.id) !== '211'),
+        context: state.chatContext,
+        selectedResource: currentResource(),
+        translate
+      });
+      return responseCache.set(responseKey, answer);
+    },
+    enrich: async () => {
+      if (!state.location || !state.category) return [];
+      state.searched = true;
+      return searchNearby({ quiet: true });
+    }
   });
+  const answer = task.response;
+  state.chatMetrics.answerComputeMs = task.responseMs;
+  state.chatMetrics.lastResponseMs = Math.max(0, performance.now() - responseStartedAt);
+  performance.mark?.('bridgeai-response-ready');
+  performance.measure?.('bridgeai-stored-response', 'bridgeai-response-start', 'bridgeai-response-ready');
   state.chatContext = answer.context;
   state.chatMessages.push({
     role: 'assistant',
@@ -1261,8 +1466,10 @@ async function sendChat(form) {
     language: answer.language,
     recommendations: answer.recommendations
   });
+  state.chatLoading = false;
   persistShared();
   render({ focus: '#chatInput' });
+  void task.enrichment;
 }
 
 app.addEventListener('submit', event => {
@@ -1311,8 +1518,10 @@ app.addEventListener('click', async event => {
         state.location = tr('useLocation');
         state.searched = Boolean(state.category);
         state.page = state.searched ? 'find' : 'home';
+        state.storedResults = sourceResources;
+        state.liveResults = [];
         persistShared();
-        if (state.searched) await searchNearby({ coordinates: { lat: position.coords.latitude, lng: position.coords.longitude } });
+        if (state.searched) void searchNearby({ coordinates: { lat: position.coords.latitude, lng: position.coords.longitude } });
         else render();
       },
       error => {
@@ -1382,10 +1591,12 @@ app.addEventListener('click', async event => {
     state.query = searchNeed();
     state.searched = true;
     state.page = 'find';
+    state.storedResults = sourceResources;
+    state.liveResults = [];
     persistHelper();
     persistShared();
     render();
-    await searchNearby();
+    void searchNearby();
   }
   if (target.matches('[data-clear-intake]')) {
     state.helperIntake = {};
@@ -1415,8 +1626,21 @@ app.addEventListener('click', async event => {
   }
   if (target.matches('[data-print-plan]')) window.print();
   if (target.matches('[data-clear-filters]')) {
-    state.filters = { openNow: false, availableToday: false, walkIn: false, noId: false, noRegistration: false, accessible: false, language: '' };
+    state.filters = {
+      openNow: false,
+      availableToday: false,
+      walkIn: false,
+      noId: false,
+      noRegistration: false,
+      accessible: false,
+      language: '',
+      verifiedEligibility: false
+    };
     render();
+  }
+  if (target.matches('[data-retry-search]')) {
+    state.errorKey = '';
+    void searchNearby();
   }
   if (target.matches('[data-start-eligibility]')) {
     const resourceSelect = document.querySelector('#eligibilityResource');
@@ -1459,6 +1683,9 @@ app.addEventListener('click', async event => {
   if (target.matches('[data-clear-location]')) {
     state.location = '';
     state.coordinates = null;
+    state.activeSearchKey = '';
+    state.storedResults = sourceResources;
+    state.liveResults = [];
     state.eligibility.location = '';
     safeStorageRemove(STORAGE.location);
     safeStorageRemove('ba-coords');
@@ -1472,6 +1699,7 @@ app.addEventListener('click', async event => {
     state.helperIntake = {};
     state.helperPlan = [];
     state.liveResults = [];
+    state.activeSearchKey = '';
     state.searched = false;
     state.corrections = [];
     state.eligibility = { resourceId: '', location: '', answers: {}, step: 0, started: false };
@@ -1520,6 +1748,10 @@ app.addEventListener('change', event => {
     state.filters[target.dataset.filterText] = target.value;
     render();
   }
+  if (target.matches('#sortBy')) {
+    state.sortBy = target.value;
+    render();
+  }
   if (target.matches('[data-plan-status]')) {
     state.helperPlan = updatePlanStatus(state.helperPlan, target.dataset.planStatus, STATUS_STORAGE[target.value]);
     persistHelper();
@@ -1535,6 +1767,17 @@ app.addEventListener('change', event => {
     state.eligibility.answers = {};
     state.eligibility.step = 0;
   }
+});
+
+let filterInputTimer = null;
+app.addEventListener('input', event => {
+  const target = event.target;
+  if (!target.matches('[data-filter-text]')) return;
+  clearTimeout(filterInputTimer);
+  filterInputTimer = setTimeout(() => {
+    state.filters[target.dataset.filterText] = target.value;
+    render();
+  }, 150);
 });
 
 window.addEventListener('online', () => {

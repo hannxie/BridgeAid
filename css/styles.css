@@ -1550,9 +1550,27 @@ textarea:focus-visible {
 }
 
 .call-211 {
-    border-color: var(--teal) !important;
-    background: #e5f5f3 !important;
-    color: var(--navy) !important
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 44px;
+    border: 1px solid var(--teal);
+    border-radius: 999px;
+    background: #e5f5f3;
+    padding: 8px 15px;
+    color: var(--navy);
+    font-weight: 850;
+    text-decoration: none
+}
+
+.hero-211 {
+    display: flex;
+    justify-content: flex-start;
+    margin-bottom: 18px
+}
+
+.call-211:hover {
+    background: #d3eeea
 }
 
 .home-empty {
@@ -1707,6 +1725,95 @@ textarea:focus-visible {
     font-weight: 800
 }
 
+.weekly-hours {
+    display: grid;
+    gap: 3px;
+    max-width: 500px;
+    color: var(--ink)
+}
+
+.hours-row {
+    display: grid;
+    grid-template-columns: minmax(92px, .55fr) minmax(135px, 1fr);
+    gap: 10px;
+    border-radius: 7px;
+    padding: 4px 8px
+}
+
+.hours-row.current-day {
+    border-left: 4px solid var(--teal);
+    background: #e5f5f3;
+    padding-left: 7px
+}
+
+.hours-row strong {
+    color: var(--navy)
+}
+
+.hours-note,
+.hours-unlisted {
+    margin: 7px 0 2px
+}
+
+.special-hours,
+.holiday-hours {
+    margin: 7px 0
+}
+
+.hours-evidence {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px 12px;
+    margin-top: 6px;
+    color: var(--muted);
+    font-size: .78rem
+}
+
+.hours-evidence a {
+    color: var(--teal);
+    font-weight: 800
+}
+
+.results-heading {
+    align-items: end;
+    gap: 16px
+}
+
+.sort-control {
+    display: grid;
+    gap: 4px;
+    min-width: 170px;
+    color: var(--navy);
+    font-size: .82rem;
+    font-weight: 800
+}
+
+.sort-control select {
+    min-height: 42px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--white);
+    padding: 7px 10px
+}
+
+.retry-search {
+    min-height: 36px;
+    margin-left: 8px;
+    padding: 6px 10px
+}
+
+.chat-loading {
+    display: flex;
+    align-items: center;
+    gap: 8px
+}
+
+.chat-loading .spinner {
+    width: 17px;
+    height: 17px;
+    border-width: 2px
+}
+
 @media(max-width:1000px) {
     .search-primary-row {
         grid-template-columns: minmax(220px, 1.2fr) minmax(190px, 1fr) 130px
@@ -1770,6 +1877,19 @@ textarea:focus-visible {
 
     .application-actions>* {
         width: 100%
+    }
+
+    .results-heading {
+        align-items: stretch
+    }
+
+    .sort-control {
+        width: 100%
+    }
+
+    .hours-row {
+        grid-template-columns: minmax(80px, .5fr) minmax(0, 1fr);
+        font-size: .82rem
     }
 }
 

@@ -16,12 +16,15 @@ import {
   resourceCoverage,
   cacheKey,
   readCachedSearch,
-  writeCachedSearch
+  writeCachedSearch,
+  sortResources
 } from '../js/services/resource-service.js';
 import {
   nextRecurringEvent,
   resolveSchedule,
-  formatInTimeZone
+  formatInTimeZone,
+  weeklyScheduleRows,
+  resourceScheduleState
 } from '../js/services/schedule-service.js';
 import {
   questionsForRules,
@@ -37,7 +40,10 @@ import {
   haversineMiles,
   geocodeLocation,
   buildOverpassQuery,
-  normalizeOsmElement
+  normalizeOsmElement,
+  fetchNearbyResources,
+  geocodeResourceAddresses,
+  clearLocationCaches
 } from '../js/services/location-service.js';
 import {
   escapeHtml,
@@ -80,8 +86,20 @@ import {
 } from '../js/services/correction-service.js';
 import {
   sourcePriority,
-  verifyResourceSchedule
+  verifyResourceSchedule,
+  parseOpeningHours
 } from '../js/services/schedule-verification-service.js';
+import {
+  googlePeriodsToWeeklyHours,
+  googleSpecialHours,
+  placesApiKey,
+  findConfiguredPlace,
+  mergePlaceEvidence
+} from '../js/services/places-enrichment-service.js';
+import {
+  createRequestCoordinator,
+  storedFirstResponse
+} from '../js/services/performance-service.js';
 import { registrationGuidance } from '../js/services/registration-service.js';
 import { categories, resources } from '../data/resources.js';
 
@@ -242,6 +260,46 @@ test('offline behavior can reuse cached resources', () => {
   assert.equal(readCachedSearch(cache, 'offline', 200).resources[0].name, 'Saved');
 });
 
+test('request coordination deduplicates concurrent external work', async () => {
+  const coordinator = createRequestCoordinator();
+  let calls = 0;
+  let release;
+  const pending = coordinator.run('same-search', () => {
+    calls += 1;
+    return new Promise(resolve => {
+      release = resolve;
+    });
+  });
+  const duplicate = coordinator.run('same-search', () => {
+    calls += 1;
+    return Promise.resolve('duplicate');
+  });
+  assert.equal(pending, duplicate);
+  assert.equal(calls, 0);
+  await Promise.resolve();
+  assert.equal(calls, 1);
+  release('complete');
+  assert.equal(await duplicate, 'complete');
+});
+
+test('stored-first responses return before background enrichment and record latency', async () => {
+  let release;
+  const times = [100, 104];
+  const task = storedFirstResponse({
+    answer: () => ({ text: 'stored answer' }),
+    enrich: () => new Promise(resolve => {
+      release = resolve;
+    }),
+    clock: () => times.shift()
+  });
+  assert.equal(task.response.text, 'stored answer');
+  assert.equal(task.responseMs, 4);
+  await Promise.resolve();
+  assert.equal(typeof release, 'function');
+  release('enriched');
+  assert.equal(await task.enrichment, 'enriched');
+});
+
 test('weekly recurring schedules calculate the next event', () => {
   const result = nextRecurringEvent('Every Monday', new Date('2026-07-28T12:00:00'));
   assert.equal(result.toISOString().slice(0, 10), '2026-08-03');
@@ -277,6 +335,128 @@ test('time-zone formatting accounts for daylight-saving time', () => {
   const summer = formatInTimeZone(new Date('2026-07-15T20:00:00Z'), 'America/Los_Angeles');
   assert.match(winter, /12:00 PM/);
   assert.match(summer, /1:00 PM/);
+});
+
+test('seven-day schedules highlight the local current day and calculate open state', () => {
+  const resource = {
+    timeZone: 'America/Los_Angeles',
+    weeklyHours: {
+      monday: [{ open: '09:00', close: '17:00' }],
+      tuesday: [{ open: '09:00', close: '17:00' }],
+      wednesday: [{ open: '09:00', close: '17:00' }],
+      thursday: [{ open: '09:00', close: '17:00' }],
+      friday: [{ open: '09:00', close: '17:00' }],
+      saturday: [],
+      sunday: []
+    }
+  };
+  const now = new Date('2026-07-28T17:00:00Z');
+  const rows = weeklyScheduleRows(resource, 'en', now);
+  assert.equal(rows.length, 7);
+  assert.equal(rows.find(row => row.current).day, 'tuesday');
+  assert.equal(resourceScheduleState(resource, now).code, 'open_now');
+  assert.equal(resourceScheduleState(resource, new Date('2026-08-02T17:00:00Z')).openNow, false);
+});
+
+test('overnight hours, holiday closures, events, appointments, and unknown hours are conservative', () => {
+  const overnight = {
+    timeZone: 'America/Los_Angeles',
+    weeklyHours: {
+      monday: [],
+      tuesday: [{ open: '22:00', close: '02:00' }],
+      wednesday: [],
+      thursday: [],
+      friday: [],
+      saturday: [],
+      sunday: []
+    }
+  };
+  assert.equal(resourceScheduleState(overnight, new Date('2026-07-29T08:00:00Z')).openNow, true);
+  const holiday = {
+    ...overnight,
+    weeklyHours: { ...overnight.weeklyHours, tuesday: [{ open: '09:00', close: '17:00' }] },
+    holidayHours: [{ date: '2026-07-28', closed: true }]
+  };
+  assert.equal(resourceScheduleState(holiday, new Date('2026-07-28T17:00:00Z')).openNow, false);
+  assert.equal(resourceScheduleState({ eventDates: ['2026-07-28'] }, new Date('2026-07-28T17:00:00Z')).availableToday, true);
+  assert.equal(resourceScheduleState({
+    eventDates: ['2026-07-28'],
+    weeklyHours: { ...overnight.weeklyHours, tuesday: [] }
+  }, new Date('2026-07-28T17:00:00Z')).code, 'event_today');
+  assert.equal(resourceScheduleState({ appointmentOnly: true }, new Date('2026-07-28T17:00:00Z')).openNow, false);
+  const appointment = resourceScheduleState({
+    appointmentOnly: true,
+    weeklyHours: { ...overnight.weeklyHours, tuesday: [{ open: '09:00', close: '17:00' }] }
+  }, new Date('2026-07-28T17:00:00Z'));
+  assert.equal(appointment.code, 'appointment_only');
+  assert.equal(appointment.availableToday, true);
+  assert.equal(appointment.openNow, false);
+  assert.equal(resourceScheduleState({}, new Date('2026-07-28T17:00:00Z')).code, 'hours_not_listed');
+  assert.equal(resourceScheduleState({ temporaryClosure: true, weeklyHours: holiday.weeklyHours }, new Date('2026-07-28T17:00:00Z')).openNow, false);
+});
+
+test('all result filters combine without treating missing evidence as affirmative', () => {
+  const now = new Date('2026-07-28T17:00:00Z');
+  const matching = {
+    id: 'matching',
+    name: 'Matching',
+    category: 'health',
+    services: ['health'],
+    distance: 2,
+    weeklyHours: {
+      monday: [],
+      tuesday: [{ open: '09:00', close: '17:00' }],
+      wednesday: [],
+      thursday: [],
+      friday: [],
+      saturday: [],
+      sunday: []
+    },
+    timeZone: 'America/Los_Angeles',
+    walkInStatus: 'Walk-ins accepted',
+    noIdRequired: true,
+    registrationRequirement: 'Not required',
+    accessibility: ['Wheelchair accessible'],
+    languages: ['Spanish'],
+    localEligibilityVerified: true
+  };
+  const missingEvidence = { id: 'unknown', name: 'Unknown', category: 'health', distance: 1 };
+  const result = filterResources([matching, missingEvidence], {
+    category: 'health',
+    radius: 5,
+    openNow: true,
+    availableToday: true,
+    walkIn: true,
+    noId: true,
+    noRegistration: true,
+    accessible: true,
+    language: 'spanish',
+    verifiedEligibility: true
+  }, { now });
+  assert.deepEqual(result.map(resource => resource.id), ['matching']);
+});
+
+test('distance and open-soonest sorting keep missing values last', () => {
+  const schedule = open => ({
+    monday: [],
+    tuesday: [{ open, close: '17:00' }],
+    wednesday: [],
+    thursday: [],
+    friday: [],
+    saturday: [],
+    sunday: []
+  });
+  const rows = [
+    { id: 'far', distance: 8, weeklyHours: schedule('11:00'), timeZone: 'America/Los_Angeles' },
+    { id: 'near', distance: 1, weeklyHours: schedule('10:00'), timeZone: 'America/Los_Angeles' },
+    { id: 'missing', distance: null }
+  ];
+  assert.deepEqual(sortResources(rows, 'nearest').map(row => row.id), ['near', 'far', 'missing']);
+  assert.deepEqual(sortResources(rows, 'farthest').map(row => row.id), ['far', 'near', 'missing']);
+  assert.deepEqual(
+    sortResources(rows, 'openSoonest', new Date('2026-07-28T16:00:00Z')).map(row => row.id),
+    ['near', 'far', 'missing']
+  );
 });
 
 test('eligibility questions include only missing relevant fields', () => {
@@ -369,11 +549,92 @@ test('OpenStreetMap normalization retains source attribution', () => {
     type: 'node',
     lat: 47,
     lon: -122,
-    tags: { name: 'Food Pantry', amenity: 'food_bank' }
+    tags: {
+      name: 'Food Pantry',
+      amenity: 'food_bank',
+      opening_hours: 'Mo-Fr 09:00-17:00',
+      wheelchair: 'yes',
+      'contact:language': 'English; Spanish'
+    }
   }, { lat: 47, lng: -122 });
   assert.equal(resource.category, 'food');
   assert.match(resource.sourceUrls[0], /openstreetmap/);
   assert.equal(resource.verificationStatus.includes('confirm'), true);
+  assert.equal(resource.weeklyHours.monday[0].open, '09:00');
+  assert.deepEqual(resource.accessibility, ['Wheelchair accessible']);
+  assert.deepEqual(resource.languages, ['English', 'Spanish']);
+});
+
+test('stored addresses receive coordinates and distance in the background enrichment path', async () => {
+  clearLocationCaches();
+  const fetcher = async () => ({
+    ok: true,
+    json: async () => [{ lat: '47.6101', lon: '-122.3344', display_name: '1 Main St, Seattle, WA' }]
+  });
+  const enriched = await geocodeResourceAddresses(
+    [{ id: 'stored', name: 'Stored', address: '1 Main St, Seattle, WA' }],
+    { origin: { lat: 47.6062, lng: -122.3321 }, fetcher, maximum: 1 }
+  );
+  assert.equal(enriched[0].latitude, 47.6101);
+  assert.ok(enriched[0].distance > 0);
+});
+
+test('live discovery tries both bounded endpoints and clearly fails when both fail', async () => {
+  let attempts = 0;
+  const fetcher = async () => {
+    attempts += 1;
+    throw new Error('external unavailable');
+  };
+  await assert.rejects(
+    fetchNearbyResources({ lat: 47.6, lng: -122.3, fetcher }),
+    /external unavailable/
+  );
+  assert.equal(attempts, 2);
+});
+
+test('configured Places enrichment preserves official facts and flags conflicts', async () => {
+  assert.equal(placesApiKey({ querySelector: () => ({ content: ' configured-key ' }) }), 'configured-key');
+  let unconfiguredCalls = 0;
+  const none = await findConfiguredPlace({ name: 'Program' }, {
+    apiKey: '',
+    fetcher: async () => {
+      unconfiguredCalls += 1;
+      return {};
+    }
+  });
+  assert.equal(none, null);
+  assert.equal(unconfiguredCalls, 0);
+
+  const periods = googlePeriodsToWeeklyHours([{
+    open: { day: 1, hour: 9, minute: 0 },
+    close: { day: 1, hour: 17, minute: 0 }
+  }]);
+  assert.deepEqual(periods.monday, [{ open: '09:00', close: '17:00' }]);
+  assert.deepEqual(googleSpecialHours({
+    specialDays: [{ date: { year: 2026, month: 12, day: 25 }, exceptionalHours: true }]
+  }), [{ date: '2026-12-25', periods: null, label: '' }]);
+
+  const official = {
+    id: 'official',
+    address: '1 Official Way',
+    phone: '206-555-0100',
+    officialWebsite: 'https://official.example',
+    weeklyHours: { monday: [{ open: '08:00', close: '16:00' }] },
+    hoursSourceUrl: 'https://official.example/hours'
+  };
+  const merged = mergePlaceEvidence(official, {
+    id: 'place-id',
+    formattedAddress: '2 Different Way',
+    nationalPhoneNumber: '206-555-0199',
+    websiteUri: 'https://different.example',
+    businessStatus: 'CLOSED_TEMPORARILY',
+    regularOpeningHours: { periods: [{ open: { day: 1, hour: 9 }, close: { day: 1, hour: 17 } }] }
+  }, '2026-07-28');
+  assert.equal(merged.address, official.address);
+  assert.equal(merged.weeklyHours, official.weeklyHours);
+  assert.equal(merged.hoursSourceUrl, official.hoursSourceUrl);
+  assert.equal(merged.temporaryClosure, true);
+  assert.ok(merged.conflicts.length >= 3);
 });
 
 test('user-provided text is escaped before DOM insertion', () => {
@@ -479,6 +740,7 @@ test('message language detection and explicit language requests work', () => {
 test('assistant understands multilingual categories, locations, and distinct intents', () => {
   assert.equal(assistantCategory('我需要食物'), 'food');
   assert.equal(assistantCategory('Necesito ayuda legal'), 'legal');
+  assert.equal(assistantCategory('Necesito atención médica'), 'health');
   assert.equal(locationFromMessage('Find food near Seattle, WA'), 'Seattle, WA');
   assert.equal(assistantIntent('What time are you open?'), 'hours');
   assert.equal(assistantIntent('How do I apply?'), 'registration');
@@ -515,6 +777,46 @@ test('grounded assistant cites stored resources and responds in the message lang
   assert.match(answer.text, /Encontré/);
   assert.equal(answer.recommendations[0].name, 'Community Pantry');
   assert.equal(answer.recommendations[0].address, '100 Main St, Seattle, WA 98101');
+});
+
+test('latest assistant message language wins and remains consistent across turns', () => {
+  const fixture = [{
+    id: 'local-food',
+    name: 'Community Pantry',
+    category: 'food',
+    services: ['food'],
+    address: '100 Main St, Seattle, WA 98101',
+    sourceUrls: ['https://official.example/program']
+  }];
+  const chinese = answerGroundedAssistant({
+    message: '我需要食物',
+    selectedLanguage: 'en',
+    currentLocation: 'Seattle',
+    resources: fixture,
+    translate
+  });
+  assert.equal(chinese.language, 'zh');
+  assert.match(chinese.text, /找到/);
+  const spanish = answerGroundedAssistant({
+    message: 'Necesito comida',
+    selectedLanguage: 'zh',
+    currentLocation: 'Seattle',
+    resources: fixture,
+    context: chinese.context,
+    translate
+  });
+  assert.equal(spanish.language, 'es');
+  assert.match(spanish.text, /Encontré/);
+  const english = answerGroundedAssistant({
+    message: 'I need food',
+    selectedLanguage: 'es',
+    currentLocation: 'Seattle',
+    resources: fixture,
+    context: spanish.context,
+    translate
+  });
+  assert.equal(english.language, 'en');
+  assert.match(english.text, /I found/);
 });
 
 test('assistant asks specific follow-ups and does not repeat unrelated answers', () => {
@@ -665,12 +967,14 @@ test('correction verification sends confirmed evidence to administrative review'
 test('schedule verification checks official sources and extracts JSON-LD hours', async () => {
   const resource = { id: 'a', officialWebsite: 'https://official.example', sourceUrls: ['https://directory.example'] };
   assert.equal(sourcePriority(resource)[0], 'https://official.example');
+  assert.equal(parseOpeningHours('Mo-Fr 09:00-17:00').friday[0].close, '17:00');
   const fetcher = async () => ({
     ok: true,
     text: async () => '<script type="application/ld+json">{"openingHours":["Mo-Fr 09:00-17:00"]}</script>'
   });
   const checked = await verifyResourceSchedule(resource, fetcher, new Date('2026-01-02T00:00:00Z'));
   assert.equal(checked.hours, 'Mo-Fr 09:00-17:00');
+  assert.equal(checked.weeklyHours.monday[0].open, '09:00');
   assert.equal(checked.scheduleVerificationStatus, 'verified_from_official_source');
 });
 
@@ -680,6 +984,34 @@ test('missing schedule becomes uncertain only after source checks fail', async (
   const checked = await verifyResourceSchedule(resource, fetcher, new Date('2026-01-02T00:00:00Z'));
   assert.equal(checked.scheduleVerificationStatus, 'searched_no_reliable_schedule');
   assert.equal(checked.scheduleVerificationAttempts.length, 1);
+});
+
+test('verified Seattle resources publish seven-day hours or an explicit not-listed state', () => {
+  const local = resources.filter(resource => resource.verified === '2026-07-28');
+  assert.equal(local.length, 13);
+  for (const resource of local) {
+    assert.ok(resource.weeklyHours || resource.scheduleLabel === 'not_listed', resource.id);
+    if (resource.weeklyHours) assert.equal(weeklyScheduleRows(resource).length, 7, resource.id);
+    assert.ok(resource.hoursSourceUrl, `${resource.id} hours source`);
+    assert.ok(resource.hoursLastVerified, `${resource.id} hours verification date`);
+  }
+});
+
+test('eligibility fallback uses the exact required disclosure in the interface', async () => {
+  assert.equal(
+    LOCALES.en.eligibilityNotPubliclyListed,
+    'This program does not publicly list specific eligibility requirements. Contact the provider for confirmation.'
+  );
+  const appSource = await readFile(new URL('../js/app.js', import.meta.url), 'utf8');
+  assert.match(appSource, /eligibilityNotPubliclyListed/);
+});
+
+test('search UI exposes one Call 211 action and does not warn when stored fallback exists', async () => {
+  const appSource = await readFile(new URL('../js/app.js', import.meta.url), 'utf8');
+  assert.equal((appSource.match(/href="tel:211"/g) || []).length, 1);
+  assert.doesNotMatch(appSource, /state\.errorKey\s*=\s*['"]searchError['"]/);
+  assert.match(appSource, /staticMatches\(\)\.length/);
+  assert.match(appSource, /void searchNearby\(\)/);
 });
 
 test('removed support numbers and confidence scores are absent from the interface source', async () => {

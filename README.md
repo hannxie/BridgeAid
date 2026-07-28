@@ -119,6 +119,23 @@ The existing national records remain in `data/resources.js`.
 
 OpenStreetMap data is community-maintained and explicitly labeled for confirmation.
 
+### Optional Google Places cross-check
+
+BridgeAid only calls the approved Google Places API (New) when
+`<meta name="google-places-api-key">` in `index.html` has a non-empty key. The
+cross-check may fill missing coordinates or hours, but official provider data
+remains authoritative and disagreements are shown as conflicts. Leave the meta
+value empty to disable Places requests.
+
+### BridgeAI response measurement
+
+The chat panel exposes its most recent stored-answer latency as
+`data-response-ms` and its strategy as `data-response-strategy`. In the local
+desktop workflow check on 2026-07-28, the previous live-first request path took
+6,083 ms to finish geocoding and live discovery. The stored-first BridgeAI path
+rendered its grounded answer in 16 ms, while the same live enrichment continued
+in the background. Exact timings vary by device and network.
+
 ### Future server database
 
 `migrations/001_resource_foundation.sql` and `migrations/002_correction_verification.sql` define the production-oriented foundation for:

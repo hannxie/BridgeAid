@@ -1,3 +1,5 @@
+import { resourceScheduleState } from './schedule-service.js';
+
 const FRESH_FOR_MS = 24 * 60 * 60 * 1000;
 
 export function textFor(value, language = 'en') {
@@ -16,6 +18,10 @@ export function normalizeResource(resource, language = 'en') {
   const services = Array.isArray(resource.services)
     ? resource.services
     : [resource.category].filter(Boolean);
+  const accessText = textFor(resource.access, language);
+  const appointmentText = textFor(resource.appointmentRequirement, language);
+  const explicitIdText = textFor(resource.identificationRequirement || resource.idRequirement, language);
+  const hoursText = textFor(resource.hours, language);
   return {
     id: String(resource.id || ''),
     organizationName: resource.organizationName || resource.name || 'Unnamed organization',
@@ -37,7 +43,21 @@ export function normalizeResource(resource, language = 'en') {
     website: resource.website || resource.url || '',
     officialWebsite: resource.officialWebsite || resource.url || '',
     registrationUrl: resource.registrationUrl || '',
-    hours: textFor(resource.hours, language),
+    hours: hoursText,
+    weeklyHours: resource.weeklyHours && typeof resource.weeklyHours === 'object' ? resource.weeklyHours : null,
+    timeZone: resource.timeZone || 'America/Los_Angeles',
+    specialHours: Array.isArray(resource.specialHours) ? resource.specialHours.map(value => textFor(value, language)) : [],
+    holidayHours: Array.isArray(resource.holidayHours)
+      ? resource.holidayHours.map(exception => ({ ...exception, label: textFor(exception.label, language) }))
+      : [],
+    hoursNote: textFor(resource.hoursNote, language),
+    hoursSourceUrl: resource.hoursSourceUrl || resource.scheduleSourceUrl || '',
+    hoursLastVerified: resource.hoursLastVerified || resource.scheduleLastVerified || '',
+    appointmentOnly: Boolean(resource.appointmentOnly),
+    onlineAlwaysAvailable: Boolean(resource.onlineAlwaysAvailable)
+      || /online .*(?:all times|always|24 hours)/i.test(hoursText),
+    temporaryClosure: Boolean(resource.temporaryClosure),
+    eventDates: Array.isArray(resource.eventDates) ? resource.eventDates : [],
     scheduleRules: Array.isArray(resource.scheduleRules) ? resource.scheduleRules : [],
     scheduleLabel: resource.scheduleLabel || (textFor(resource.hours, language) ? 'typical' : 'uncertain'),
     scheduleVerificationStatus: resource.scheduleVerificationStatus || '',
@@ -46,8 +66,9 @@ export function normalizeResource(resource, language = 'en') {
     scheduleVerificationAttempts: Array.isArray(resource.scheduleVerificationAttempts) ? resource.scheduleVerificationAttempts : [],
     nextEvent: resource.nextEvent || '',
     availabilityStatus: resource.availabilityStatus || 'Schedule uncertain',
-    appointmentRequirement: textFor(resource.appointmentRequirement, language),
-    walkInStatus: resource.walkInStatus || '',
+    appointmentRequirement: appointmentText,
+    walkInStatus: textFor(resource.walkInStatus, language)
+      || (/walk.?in/i.test(`${appointmentText} ${accessText}`) ? 'Walk-ins accepted' : ''),
     eligibilitySummary: textFor(resource.eligibilitySummary || resource.eligibility, language),
     eligibilityDetails: Object.fromEntries(Object.entries(resource.eligibilityDetails || {})
       .map(([key, value]) => [key, textFor(value, language)])),
@@ -59,11 +80,13 @@ export function normalizeResource(resource, language = 'en') {
     serviceAreaZipRanges: Array.isArray(resource.serviceAreaZipRanges) ? resource.serviceAreaZipRanges : [],
     serviceAreaZipPrefixes: Array.isArray(resource.serviceAreaZipPrefixes) ? resource.serviceAreaZipPrefixes : [],
     localEligibilityVerified: Boolean(resource.localEligibilityVerified),
+    noIdRequired: Boolean(resource.noIdRequired) || /no (?:photo )?(?:id|identification) (?:is )?required/i.test(explicitIdText),
+    identificationRequirement: explicitIdText,
     requiredDocuments: Array.isArray(resource.requiredDocuments) ? resource.requiredDocuments.map(value => textFor(value, language)) : [],
     accessibility: Array.isArray(resource.accessibility) ? resource.accessibility.map(value => textFor(value, language)) : [],
     languages: Array.isArray(resource.languages) ? resource.languages.map(value => textFor(value, language)) : [],
     transportation: Array.isArray(resource.transportation) ? resource.transportation.map(value => textFor(value, language)) : [],
-    registrationRequirement: resource.registrationRequirement || textFor(resource.access, language),
+    registrationRequirement: textFor(resource.registrationRequirement, language) || accessText,
     applicationSteps: Array.isArray(resource.applicationSteps) ? resource.applicationSteps.map(value => textFor(value, language)) : [],
     applicationMethods: Array.isArray(resource.applicationMethods) ? resource.applicationMethods : [],
     applicationLinks: Array.isArray(resource.applicationLinks)
@@ -159,20 +182,47 @@ export function writeCachedSearch(cache, key, resources, now = Date.now()) {
   return { ...(cache || {}), [key]: { savedAt: now, resources: mergeDuplicates(resources) } };
 }
 
-export function filterResources(resources, filters = {}) {
+export function filterResources(resources, filters = {}, options = {}) {
   return resources.filter(resource => {
     const r = normalizeResource(resource);
+    const schedule = resourceScheduleState(r, options.now || new Date());
     if (filters.radius && r.distance !== null && r.distance > Number(filters.radius)) return false;
-    if (filters.openNow && r.availabilityStatus !== 'Open now') return false;
-    if (filters.availableToday && !['Open now', 'Available today'].includes(r.availabilityStatus)) return false;
+    if (filters.category && r.category !== filters.category && !r.services.includes(filters.category) && r.category !== 'all') return false;
+    if (filters.openNow && !schedule.openNow) return false;
+    if (filters.availableToday && !schedule.availableToday) return false;
     if (filters.walkIn && !/yes|accepted|walk-in/i.test(r.walkInStatus)) return false;
-    if (filters.noId && r.requiredDocuments.some(d => /\bid\b|identification/i.test(d))) return false;
-    if (filters.noRegistration && r.registrationRequirement && !/not required|none/i.test(r.registrationRequirement)) return false;
+      if (filters.noId && !r.noIdRequired) return false;
+    if (filters.noRegistration && !/not required|none|walk.?in/i.test(r.registrationRequirement)) return false;
     if (filters.accessible && !r.accessibility.some(a => /wheelchair/i.test(a))) return false;
     if (filters.language && !r.languages.some(l => l.toLowerCase() === filters.language.toLowerCase())) return false;
+    if (filters.verifiedEligibility && !r.localEligibilityVerified) return false;
     if (filters.confidence && (r.confidence ?? 0) < Number(filters.confidence)) return false;
     return true;
   });
+}
+
+export function sortResources(resources, sortBy = 'relevance', now = new Date()) {
+  const rows = [...resources];
+  const distance = resource => Number.isFinite(resource.distance) ? resource.distance : Number.POSITIVE_INFINITY;
+  if (sortBy === 'nearest') return rows.sort((a, b) => distance(a) - distance(b));
+  if (sortBy === 'farthest') {
+    return rows.sort((a, b) => {
+      const aMissing = !Number.isFinite(a.distance);
+      const bMissing = !Number.isFinite(b.distance);
+      if (aMissing !== bMissing) return aMissing ? 1 : -1;
+      return distance(b) - distance(a);
+    });
+  }
+  if (sortBy === 'openSoonest') {
+    return rows.sort((a, b) => {
+      const aWait = resourceScheduleState(normalizeResource(a), now).minutesUntilOpen;
+      const bWait = resourceScheduleState(normalizeResource(b), now).minutesUntilOpen;
+      const safeA = Number.isFinite(aWait) ? aWait : Number.POSITIVE_INFINITY;
+      const safeB = Number.isFinite(bWait) ? bWait : Number.POSITIVE_INFINITY;
+      return safeA - safeB || distance(a) - distance(b);
+    });
+  }
+  return rows.sort((a, b) => Number(b._rank || 0) - Number(a._rank || 0));
 }
 
 export function rankResources(resources, context = {}) {

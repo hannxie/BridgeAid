@@ -1,4 +1,5 @@
 const DAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+export const WEEK_DAYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
 
 function atNoon(date) {
   const d = new Date(date);
@@ -77,4 +78,188 @@ export function formatInTimeZone(date, timeZone, locale = 'en-US') {
     dateStyle: 'medium',
     timeStyle: 'short'
   }).format(date);
+}
+
+function minutesFor(value) {
+  const match = String(value || '').match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (hours > 24 || minutes > 59 || (hours === 24 && minutes !== 0)) return null;
+  return hours * 60 + minutes;
+}
+
+function localParts(date, timeZone = 'America/Los_Angeles') {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    weekday: 'long',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23'
+  }).formatToParts(date);
+  const value = Object.fromEntries(parts.map(part => [part.type, part.value]));
+  return {
+    day: value.weekday.toLowerCase(),
+    date: `${value.year}-${value.month}-${value.day}`,
+    minutes: (Number(value.hour) % 24) * 60 + Number(value.minute)
+  };
+}
+
+function normalizedPeriods(value) {
+  if (!Array.isArray(value)) return null;
+  return value
+    .map(period => ({
+      open: String(period?.open || ''),
+      close: String(period?.close || '')
+    }))
+    .filter(period => minutesFor(period.open) !== null && minutesFor(period.close) !== null);
+}
+
+function scheduleException(resource, date) {
+  return (resource.holidayHours || []).find(exception => exception?.date === date) || null;
+}
+
+function periodsFor(resource, day, date = '') {
+  const exception = date ? scheduleException(resource, date) : null;
+  if (exception) return exception.closed ? [] : normalizedPeriods(exception.periods);
+  return normalizedPeriods(resource.weeklyHours?.[day]);
+}
+
+export function formatScheduleTime(value, language = 'en') {
+  const minutes = minutesFor(value);
+  if (minutes === null) return '';
+  if (minutes === 1440) return language === 'en' ? '12:00 AM' : '00:00';
+  const hours = Math.floor(minutes / 60);
+  const minuteText = String(minutes % 60).padStart(2, '0');
+  if (language !== 'en') return `${String(hours).padStart(2, '0')}:${minuteText}`;
+  const suffix = hours >= 12 ? 'PM' : 'AM';
+  const displayHour = hours % 12 || 12;
+  return `${displayHour}:${minuteText} ${suffix}`;
+}
+
+export function weeklyScheduleRows(resource, language = 'en', now = new Date()) {
+  const current = localParts(now, resource.timeZone);
+  const legacyAlwaysOpen = !resource.weeklyHours && /24/.test(String(resource.hours || ''));
+  return WEEK_DAYS.map(day => {
+    const periods = legacyAlwaysOpen
+      ? [{ open: '00:00', close: '24:00' }]
+      : periodsFor(resource, day, day === current.day ? current.date : '');
+    return {
+      day,
+      current: day === current.day,
+      known: periods !== null,
+      closed: Array.isArray(periods) && periods.length === 0,
+      periods: (periods || []).map(period => ({
+        ...period,
+        label: `${formatScheduleTime(period.open, language)}–${formatScheduleTime(period.close, language)}`
+      }))
+    };
+  });
+}
+
+function periodContains(period, minutes, fromPreviousDay = false) {
+  const open = minutesFor(period.open);
+  const close = minutesFor(period.close);
+  if (open === null || close === null) return false;
+  if (close > open) return !fromPreviousDay && minutes >= open && minutes < close;
+  return fromPreviousDay ? minutes < close : minutes >= open;
+}
+
+function nextOpeningMinutes(resource, current) {
+  const todayIndex = WEEK_DAYS.indexOf(current.day);
+  for (let offset = 0; offset <= 7; offset += 1) {
+    const index = (todayIndex + offset) % 7;
+    const day = WEEK_DAYS[index];
+    const periods = periodsFor(resource, day, offset === 0 ? current.date : '');
+    if (!periods) continue;
+    for (const period of periods) {
+      const open = minutesFor(period.open);
+      if (open === null) continue;
+      const delta = offset * 1440 + open - current.minutes;
+      if (delta > 0) return { minutes: delta, time: period.open, day };
+    }
+  }
+  return null;
+}
+
+export function resourceScheduleState(resource, now = new Date()) {
+  const timeZone = resource.timeZone || 'America/Los_Angeles';
+  const current = localParts(now, timeZone);
+  if (resource.temporaryClosure) {
+    return { code: 'temporary_closed', openNow: false, availableToday: false, minutesUntilOpen: null, timeZone };
+  }
+  const datedEvents = [
+    resource.nextEvent,
+    ...(Array.isArray(resource.eventDates) ? resource.eventDates : [])
+  ].filter(Boolean);
+  const eventIsToday = value => {
+    const text = String(value);
+    if (/^\d{4}-\d{2}-\d{2}/.test(text)) return text.slice(0, 10) === current.date;
+    const parsed = new Date(value);
+    return !Number.isNaN(parsed.getTime()) && localParts(parsed, timeZone).date === current.date;
+  };
+  const hasEventToday = datedEvents.some(eventIsToday);
+  if (!resource.weeklyHours && hasEventToday) {
+    return { code: 'event_today', openNow: false, availableToday: true, minutesUntilOpen: null, timeZone };
+  }
+  if (resource.appointmentOnly) {
+    const appointmentPeriods = resource.weeklyHours
+      ? periodsFor(resource, current.day, current.date)
+      : null;
+    return {
+      code: 'appointment_only',
+      openNow: false,
+      availableToday: Boolean(appointmentPeriods?.length || hasEventToday),
+      minutesUntilOpen: null,
+      timeZone
+    };
+  }
+  if (resource.onlineAlwaysAvailable && !resource.weeklyHours) {
+    return { code: 'online_available', openNow: true, availableToday: true, minutesUntilOpen: 0, timeZone };
+  }
+  if (!resource.weeklyHours || typeof resource.weeklyHours !== 'object') {
+    const legacyAlwaysOpen = /24/.test(String(resource.hours || ''));
+    return legacyAlwaysOpen
+      ? { code: 'open_now', openNow: true, availableToday: true, minutesUntilOpen: 0, timeZone }
+      : { code: 'hours_not_listed', openNow: false, availableToday: false, minutesUntilOpen: null, timeZone };
+  }
+
+  const todayIndex = WEEK_DAYS.indexOf(current.day);
+  const previousDay = WEEK_DAYS[(todayIndex + 6) % 7];
+  const todayPeriods = periodsFor(resource, current.day, current.date);
+  const previousPeriods = periodsFor(resource, previousDay) || [];
+  const openNow = Boolean(
+    (todayPeriods || []).some(period => periodContains(period, current.minutes))
+    || previousPeriods.some(period => periodContains(period, current.minutes, true))
+  );
+  const availableToday = Boolean((todayPeriods || []).length || openNow || hasEventToday);
+  if (openNow) return { code: 'open_now', openNow: true, availableToday: true, minutesUntilOpen: 0, timeZone };
+  if (hasEventToday) {
+    return { code: 'event_today', openNow: false, availableToday: true, minutesUntilOpen: null, timeZone };
+  }
+
+  const next = nextOpeningMinutes(resource, current);
+  if (next?.minutes <= 12 * 60) {
+    return {
+      code: 'opens_at',
+      openNow: false,
+      availableToday,
+      minutesUntilOpen: next.minutes,
+      nextOpenTime: next.time,
+      nextOpenDay: next.day,
+      timeZone
+    };
+  }
+  return {
+    code: availableToday ? 'closed' : 'closed_today',
+    openNow: false,
+    availableToday,
+    minutesUntilOpen: next?.minutes ?? null,
+    nextOpenTime: next?.time || '',
+    nextOpenDay: next?.day || '',
+    timeZone
+  };
 }

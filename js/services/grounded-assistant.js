@@ -1,11 +1,13 @@
 import { detectMessageLanguage, requestedLanguage } from '../localization.js';
 import { normalizeResource, rankResources } from './resource-service.js';
+import { localProgramForResource } from './local-eligibility-service.js';
+import { resourceScheduleState } from './schedule-service.js';
 
 const CATEGORY_TERMS = {
   food: ['food', 'meal', 'pantry', 'hungry', 'comida', 'alimentos', 'hambre', '食物', '食品', '吃饭', '饿'],
   shelter: ['shelter', 'housing', 'sleep', 'refugio', 'alojamiento', 'vivienda', '住宿', '住所', '住房'],
   safe: ['safe place', 'domestic violence', 'abuse', 'lugar seguro', 'violencia', '安全场所', '家暴'],
-  health: ['health', 'clinic', 'doctor', 'medical', 'salud', 'clínica', 'médico', '医疗', '诊所', '医生'],
+  health: ['health', 'clinic', 'doctor', 'medical', 'salud', 'clínica', 'médico', 'médica', 'atención médica', '医疗', '诊所', '医生'],
   mental: ['mental', 'counseling', 'therapy', 'salud mental', 'terapia', '心理', '咨询'],
   hygiene: ['shower', 'laundry', 'hygiene', 'ducha', 'lavandería', '淋浴', '洗衣'],
   transport: ['bus', 'ride', 'transport', 'autobús', 'transporte', '公交', '交通'],
@@ -59,12 +61,12 @@ export function answerGroundedAssistant({
   translate
 }) {
   const requested = requestedLanguage(message);
-  const language = requested || (languageExplicit ? selectedLanguage : detectMessageLanguage(message, selectedLanguage));
+  const language = requested || detectMessageLanguage(message, context.language || selectedLanguage) || context.language || selectedLanguage;
   const intent = assistantIntent(message);
   const category = assistantCategory(message) || context.category || '';
   const location = locationFromMessage(message) || currentLocation || context.location || '';
   const tr = (key, variables) => translate(language, key, variables);
-  const nextContext = { ...context, category, location, intent };
+  const nextContext = { ...context, category, location, intent, language };
 
   if (requested && !assistantCategory(message) && intent === 'resources') {
     return { language, context: nextContext, text: tr('chatLanguageChanged'), recommendations: [] };
@@ -77,28 +79,30 @@ export function answerGroundedAssistant({
   if (!chosen) return { language, context: nextContext, text: tr('assistantNoVerified'), recommendations: [] };
 
   if (intent === 'hours') {
+    const schedule = resourceScheduleState(chosen);
     return {
       language,
       context: nextContext,
-      text: chosen.hours
-        ? `${chosen.name}: ${chosen.hours}. ${tr('confirmOrganization')}`
+      text: schedule.code !== 'hours_not_listed'
+        ? tr('assistantHoursKnown', { program: chosen.name })
         : tr('assistantHoursUnknown'),
       recommendations: [chosen]
     };
   }
   if (intent === 'eligibility') {
+    const local = localProgramForResource(chosen, location);
     return {
       language,
       context: nextContext,
-      text: chosen.localEligibilityVerified
-        ? `${chosen.name}: ${chosen.eligibilitySummary}. ${tr('preliminaryOnly')}`
-        : tr('assistantEligibilityUnknown', { location }),
+      text: local?.localEligibilityVerified
+        ? tr('assistantEligibilityKnown', { program: chosen.name })
+        : tr('assistantEligibilityNotPublished', { program: chosen.name }),
       recommendations: [chosen],
       action: 'eligibility'
     };
   }
   if (intent === 'registration') {
-    const canApply = Boolean(chosen.registrationUrl);
+    const canApply = Boolean(chosen.registrationUrl || chosen.applicationLinks.length || chosen.phone || chosen.address);
     return {
       language,
       context: nextContext,
@@ -114,7 +118,7 @@ export function answerGroundedAssistant({
       language,
       context: nextContext,
       text: chosen.address
-        ? `${chosen.name}: ${chosen.address}.`
+        ? tr('assistantLocationKnown', { program: chosen.name, address: chosen.address })
         : tr('addressUnavailable'),
       recommendations: [chosen]
     };
