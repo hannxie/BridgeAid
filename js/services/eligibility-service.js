@@ -18,6 +18,11 @@ export function evaluateEligibility(rules = [], answers = {}) {
   let failed = false;
   for (const rule of rules) {
     const value = answers[rule.field];
+    if (rule.operator === 'always') {
+      reasons.push(`${rule.label || rule.field}: meets the published rule.`);
+      details.push({ field: rule.field, label: rule.label || rule.field, passed: true });
+      continue;
+    }
     if (value === undefined || value === '') {
       missing.push(rule.field);
       continue;
@@ -25,6 +30,7 @@ export function evaluateEligibility(rules = [], answers = {}) {
     let passed = true;
     if (rule.operator === 'lte') passed = Number(value) <= Number(rule.value);
     if (rule.operator === 'gte') passed = Number(value) >= Number(rule.value);
+    if (rule.operator === 'between') passed = Number(value) >= Number(rule.value?.[0]) && Number(value) <= Number(rule.value?.[1]);
     if (rule.operator === 'eq') passed = String(value).toLowerCase() === String(rule.value).toLowerCase();
     if (rule.operator === 'in') passed = (rule.value || []).map(String).map(v => v.toLowerCase()).includes(String(value).toLowerCase());
     if (rule.operator === 'incomeTable') {

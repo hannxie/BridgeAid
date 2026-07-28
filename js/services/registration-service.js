@@ -40,15 +40,32 @@ export function registrationGuidance(resource) {
   const requirement = String(resource.registrationRequirement || '').toLowerCase();
   const notRequired = /not required|no registration|walk.?in|无需登记|不需要登记|no requiere inscripción/i.test(requirement);
   const phoneOrInPerson = !validation.valid && Boolean(resource.phone || resource.address);
+  const actions = (resource.applicationLinks || [])
+    .map(link => {
+      const checked = validateRegistrationLink(link.url, officialDomains);
+      return checked.valid ? { ...link, url: checked.url } : null;
+    })
+    .filter(Boolean);
+  if (validation.valid && !actions.some(action => action.url === validation.url)) {
+    actions.unshift({ type: 'application', url: validation.url, label: '' });
+  }
   return {
     applicationUrl: validation.valid ? validation.url : '',
     officialWebsite: resource.officialWebsite || resource.website || resource.url || '',
     phone: resource.phone || '',
     address: resource.address || '',
     requiredDocuments: Array.isArray(resource.requiredDocuments) ? resource.requiredDocuments : [],
+    applicationSteps: Array.isArray(resource.applicationSteps) ? resource.applicationSteps : [],
+    applicationMethods: Array.isArray(resource.applicationMethods) ? resource.applicationMethods : [],
+    applicationActions: actions,
+    applicationDeadline: resource.applicationDeadline || '',
+    appointmentRequirement: resource.appointmentRequirement || '',
+    afterApplying: resource.afterApplying || '',
+    applicationSourceUrl: resource.applicationSourceUrl || '',
+    applicationLastVerified: resource.applicationLastVerified || resource.lastVerified || resource.verified || '',
     notRequired,
     phoneOrInPerson,
-    hasVerifiedPath: validation.valid || notRequired || phoneOrInPerson || Boolean(resource.officialWebsite || resource.website || resource.url),
+    hasVerifiedPath: validation.valid || actions.length > 0 || notRequired || phoneOrInPerson || Boolean(resource.officialWebsite || resource.website || resource.url),
     validationReason: validation.valid ? '' : validation.reason,
     neverSubmitAutomatically: true
   };

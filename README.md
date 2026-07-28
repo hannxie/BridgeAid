@@ -40,7 +40,8 @@ The implementation kept the no-build static architecture and existing resource r
 7. **Eligibility** — added relevant-question selection, deterministic rule evaluation, household-size income tables, explainable results, and transient answers.
 8. **Registration** — added HTTPS/official-domain validation, safe instructions, calling scripts, and explicit confirmation/authorization gates.
 9. **Administration foundation** — added a database migration, authorization guard, audited admin action model, and retryable background-job model without exposing a public dashboard.
-10. **Hardening** — added 41 deterministic tests, HTML escaping, safe links, phone sanitization, local-storage failure handling, offline states, and responsive browser checks.
+10. **Hardening** — added 66 deterministic tests, HTML escaping, safe links, phone sanitization, local-storage failure handling, offline states, and responsive browser checks.
+11. **Local action paths** — added verified Seattle-area programs with structured local eligibility, full addresses, required documents, exceptions, deadlines, application steps, and direct official actions.
 
 ## User modes
 
@@ -52,7 +53,7 @@ The choice is stored under `bridgeaid-mode` and validated as either `self` or `h
 
 ### Self mode
 
-Self mode uses the heading “What do you need right now?” and a translated need dropdown covering food, shelter, safe places, health care, mental health, hygiene, transportation, benefits, employment, legal help, family support, and an “Other” field. The home page does not preload resources; results appear only after a need and location are submitted.
+Self mode uses the heading “What do you need right now?” and a translated need dropdown covering all services, food, housing, healthcare, mental health, transportation, clothing and hygiene, employment, education, childcare and family support, legal assistance, financial assistance and benefits, disability services, veteran services, immigration assistance, internet and technology, and an “Other” field. “All Services” is the default. The home page does not preload resources; results appear only after a need and location are submitted.
 
 Resource actions prioritize call, walking directions, and official sources. Users can switch to transit or driving directions. Empty facts are omitted, typical hours are labeled, and an uncertain schedule appears only after available sources have been checked.
 
@@ -230,7 +231,7 @@ or:
 node --test
 ```
 
-The deterministic suite contains 59 checks covering:
+The deterministic suite contains 66 checks covering:
 
 - Mode validation, persistence, switching, and location preservation
 - Storage corruption and blocked-storage behavior
@@ -240,7 +241,9 @@ The deterministic suite contains 59 checks covering:
 - Schedule conflict and uncertainty handling
 - Time-zone and daylight-saving behavior
 - Eligibility questions, summaries, missing information, exceptions, explainable decisions, and household income tables
-- Registration-link validation and submission authorization
+- Registration-link validation, official-domain restrictions, rich application guidance, and submission authorization
+- Exact service taxonomy ordering, expanded category coverage, and verified Seattle resource completeness
+- Exact 2026 Seattle utility-income screening and age-range rules
 - Geocoding success, ambiguity, empty result, and API failure
 - Radius queries, geographic distance, and OpenStreetMap normalization
 - HTML escaping, URL safety, and phone sanitization
@@ -255,11 +258,11 @@ The deterministic suite contains 59 checks covering:
 1. Clear this site’s local browser data and reload. Confirm the mode selector appears.
 2. Choose “I need help,” reload, and confirm the choice persists.
 3. Enter a general location, switch to helper mode, switch back, and confirm the location remains.
-4. Confirm the home page shows no preloaded resources and the need selector includes “Other.”
+4. Confirm the home page shows no preloaded resources, “All Services” is selected by default, and the selector follows the documented service order.
 5. Switch to helper mode and complete only immediate need and location.
 6. Choose “Not safe tonight” and confirm the general safety notice appears without hiding resources.
 7. Add a resource to the plan, compare resources, update status, add a note, copy, print, remove, and clear.
-8. Open the local eligibility page and registration workflow. Confirm the selected program, location, official source, and uncertainty are shown.
+8. Search 98101 with “All Services,” then open the Seattle Utility Discount Program eligibility and registration workflows. Confirm the exact local rules, documents, deadline, official actions, source, and verified date are shown.
 9. Disable the network and repeat a previously cached search. Confirm saved/static results remain.
 10. Test keyboard-only navigation, visible focus, 200% browser zoom, and a screen reader.
 11. Test widths of 320 px, 768 px, and desktop.

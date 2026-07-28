@@ -46,20 +46,34 @@ export function normalizeResource(resource, language = 'en') {
     scheduleVerificationAttempts: Array.isArray(resource.scheduleVerificationAttempts) ? resource.scheduleVerificationAttempts : [],
     nextEvent: resource.nextEvent || '',
     availabilityStatus: resource.availabilityStatus || 'Schedule uncertain',
-    appointmentRequirement: resource.appointmentRequirement || '',
+    appointmentRequirement: textFor(resource.appointmentRequirement, language),
     walkInStatus: resource.walkInStatus || '',
     eligibilitySummary: textFor(resource.eligibilitySummary || resource.eligibility, language),
+    eligibilityDetails: Object.fromEntries(Object.entries(resource.eligibilityDetails || {})
+      .map(([key, value]) => [key, textFor(value, language)])),
     eligibilityRules: Array.isArray(resource.eligibilityRules) ? resource.eligibilityRules : [],
     eligibilitySourceUrl: resource.eligibilitySourceUrl || '',
     eligibilityLastVerified: resource.eligibilityLastVerified || '',
     eligibilityExceptions: Array.isArray(resource.eligibilityExceptions) ? resource.eligibilityExceptions.map(value => textFor(value, language)) : [],
     serviceAreas: Array.isArray(resource.serviceAreas) ? resource.serviceAreas : [],
+    serviceAreaZipRanges: Array.isArray(resource.serviceAreaZipRanges) ? resource.serviceAreaZipRanges : [],
+    serviceAreaZipPrefixes: Array.isArray(resource.serviceAreaZipPrefixes) ? resource.serviceAreaZipPrefixes : [],
     localEligibilityVerified: Boolean(resource.localEligibilityVerified),
     requiredDocuments: Array.isArray(resource.requiredDocuments) ? resource.requiredDocuments.map(value => textFor(value, language)) : [],
     accessibility: Array.isArray(resource.accessibility) ? resource.accessibility.map(value => textFor(value, language)) : [],
     languages: Array.isArray(resource.languages) ? resource.languages.map(value => textFor(value, language)) : [],
     transportation: Array.isArray(resource.transportation) ? resource.transportation.map(value => textFor(value, language)) : [],
     registrationRequirement: resource.registrationRequirement || textFor(resource.access, language),
+    applicationSteps: Array.isArray(resource.applicationSteps) ? resource.applicationSteps.map(value => textFor(value, language)) : [],
+    applicationMethods: Array.isArray(resource.applicationMethods) ? resource.applicationMethods : [],
+    applicationLinks: Array.isArray(resource.applicationLinks)
+      ? resource.applicationLinks.map(link => ({ ...link, label: textFor(link.label, language) }))
+      : [],
+    applicationDeadline: textFor(resource.applicationDeadline, language),
+    afterApplying: textFor(resource.afterApplying, language),
+    applicationSourceUrl: resource.applicationSourceUrl || '',
+    applicationLastVerified: resource.applicationLastVerified || '',
+    officialDomains: Array.isArray(resource.officialDomains) ? resource.officialDomains : [],
     freeStatus: resource.freeStatus || 'Confirm with organization',
     source: resource.source || 'Source not named',
     sourceUrls,
@@ -71,6 +85,31 @@ export function normalizeResource(resource, language = 'en') {
     changeHistory: Array.isArray(resource.changeHistory) ? resource.changeHistory : [],
     keywords: Array.isArray(resource.keywords) ? resource.keywords : [],
     distance: rawDistance !== null && rawDistance !== undefined && rawDistance !== '' && Number.isFinite(Number(rawDistance)) ? Number(rawDistance) : null
+  };
+}
+
+export function resourceCoverage(resources = []) {
+  const counts = {};
+  const byLocation = {};
+  for (const resource of resources) {
+    const normalized = normalizeResource(resource);
+    const category = normalized.category;
+    counts[category] = (counts[category] || 0) + 1;
+    for (const location of normalized.serviceAreas) {
+      byLocation[location] ||= {};
+      for (const service of normalized.services) {
+        byLocation[location][service] = (byLocation[location][service] || 0) + 1;
+      }
+    }
+  }
+  const represented = Object.entries(counts).filter(([category]) => category !== 'all');
+  const highest = Math.max(0, ...represented.map(([, count]) => count));
+  return {
+    counts,
+    byLocation,
+    underrepresented: represented
+      .filter(([, count]) => highest >= 3 && count * 2 < highest)
+      .map(([category]) => category)
   };
 }
 

@@ -13,6 +13,7 @@ import {
   mergeDuplicates,
   rankResources,
   filterResources,
+  resourceCoverage,
   cacheKey,
   readCachedSearch,
   writeCachedSearch
@@ -82,6 +83,7 @@ import {
   verifyResourceSchedule
 } from '../js/services/schedule-verification-service.js';
 import { registrationGuidance } from '../js/services/registration-service.js';
+import { categories, resources } from '../data/resources.js';
 
 class MemoryStorage {
   constructor() {
@@ -136,6 +138,67 @@ test('legacy resources normalize missing fields and preserve sources', () => {
   assert.deepEqual(resource.requiredDocuments, []);
   assert.deepEqual(resource.sourceUrls, ['https://example.org']);
   assert.equal(resource.lastVerified, '2026-01-01');
+});
+
+test('service taxonomy uses the requested complete order with All Services first', () => {
+  assert.deepEqual(categories.map(category => category.label.en), [
+    'All Services',
+    'Food',
+    'Housing and Shelter',
+    'Healthcare',
+    'Mental Health',
+    'Transportation',
+    'Clothing and Hygiene',
+    'Employment',
+    'Education',
+    'Childcare and Family Support',
+    'Legal Assistance',
+    'Financial Assistance and Benefits',
+    'Disability Services',
+    'Veteran Services',
+    'Immigration Assistance',
+    'Internet and Technology',
+    'Other'
+  ]);
+});
+
+test('verified Seattle additions include actionable local evidence and full addresses', () => {
+  const local = resources.filter(resource => resource.verified === '2026-07-28');
+  assert.ok(local.length >= 12);
+  for (const resource of local) {
+    assert.match(resource.address, /Seattle, WA \d{5}$/);
+    assert.ok(resource.category);
+    assert.ok(resource.source);
+    assert.ok(resource.eligibilitySourceUrl?.startsWith('https://'));
+    assert.equal(resource.eligibilityLastVerified, '2026-07-28');
+    assert.equal(resource.applicationLastVerified, '2026-07-28');
+    assert.ok(resource.applicationSteps?.length >= 3);
+    assert.ok(resource.applicationLinks?.length >= 1);
+    assert.ok(resource.eligibilityDetails?.whoQualifies);
+    assert.ok(resource.eligibilityDetails?.geographicRestrictions);
+  }
+});
+
+test('all published application actions are HTTPS links on approved official domains', () => {
+  for (const resource of resources.filter(resource => resource.verified === '2026-07-28')) {
+    for (const action of resource.applicationLinks) {
+      assert.equal(
+        validateRegistrationLink(action.url, resource.officialDomains).valid,
+        true,
+        `${resource.id}: ${action.url}`
+      );
+    }
+  }
+});
+
+test('resource coverage reports the expanded non-food categories', () => {
+  const coverage = resourceCoverage(resources);
+  for (const category of ['shelter', 'health', 'mental', 'transport', 'hygiene', 'jobs', 'education', 'legal', 'benefits', 'disability', 'veteran', 'immigration', 'internet']) {
+    assert.ok(coverage.counts[category] >= 1, category);
+  }
+  for (const category of ['shelter', 'health', 'mental', 'transport', 'hygiene', 'jobs', 'education', 'family', 'legal', 'benefits', 'disability', 'veteran', 'immigration', 'internet']) {
+    assert.ok(coverage.byLocation.Seattle[category] >= 1, `Seattle/${category}`);
+  }
 });
 
 test('duplicate merging retains supporting evidence', () => {
@@ -525,6 +588,39 @@ test('local eligibility asks only program-specific questions and explains result
   const result = evaluateLocalEligibility(fixture, '98101', { householdSize: 2, income: 25000 });
   assert.equal(result.status, 'Likely eligible');
   assert.equal(result.passed.length, 2);
+});
+
+test('Seattle utility screening applies the exact 2026 household-income table', () => {
+  const program = resources.find(resource => resource.id === 'seattle-udp');
+  const eligible = evaluateLocalEligibility(program, '98101', {
+    householdSize: 2,
+    income: 5500,
+    utilityAccount: 'yes'
+  });
+  const overLimit = evaluateLocalEligibility(program, 'Seattle, WA', {
+    householdSize: 2,
+    income: 5600,
+    utilityAccount: 'yes'
+  });
+  assert.equal(eligible.status, 'Likely eligible');
+  assert.equal(overLimit.status, 'Likely not eligible');
+  assert.equal(evaluateLocalEligibility(program, '10001', {}).status, 'Unable to determine');
+});
+
+test('age-range eligibility supports exact program minimum and maximum ages', () => {
+  assert.equal(evaluateEligibility([{ field: 'age', operator: 'between', value: [19, 64] }], { age: 19 }).status, 'Likely eligible');
+  assert.equal(evaluateEligibility([{ field: 'age', operator: 'between', value: [19, 64] }], { age: 65 }).status, 'Likely not eligible');
+});
+
+test('rich registration guidance returns steps, methods, deadlines, and multiple actions', () => {
+  const program = normalizeResource(resources.find(resource => resource.id === 'sha-low-income-housing'));
+  const guide = registrationGuidance(program);
+  assert.equal(guide.hasVerifiedPath, true);
+  assert.ok(guide.applicationSteps.length >= 3);
+  assert.ok(guide.applicationMethods.includes('online'));
+  assert.ok(guide.applicationDeadline);
+  assert.ok(guide.afterApplying);
+  assert.ok(guide.applicationActions.length >= 2);
 });
 
 test('generic national eligibility is not presented as confirmed local eligibility', () => {

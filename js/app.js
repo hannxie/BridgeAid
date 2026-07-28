@@ -24,7 +24,8 @@ import {
 import {
   localProgramForResource,
   localEligibilityQuestions,
-  evaluateLocalEligibility
+  evaluateLocalEligibility,
+  servesLocation
 } from './services/local-eligibility-service.js';
 import { registrationGuidance } from './services/registration-service.js';
 import {
@@ -62,25 +63,26 @@ const STORAGE = {
 };
 
 const CATEGORY_CONFIG = [
+  { id: 'all', icon: '✦', key: 'categoryAll' },
   { id: 'food', icon: '●', key: 'categoryFood' },
   { id: 'shelter', icon: '⌂', key: 'categoryShelter' },
-  { id: 'safe', icon: '◆', key: 'categorySafe' },
   { id: 'health', icon: '+', key: 'categoryHealth' },
   { id: 'mental', icon: '◐', key: 'categoryMental' },
-  { id: 'hygiene', icon: '◌', key: 'categoryHygiene' },
   { id: 'transport', icon: '→', key: 'categoryTransport' },
-  { id: 'benefits', icon: '✓', key: 'categoryBenefits' },
+  { id: 'hygiene', icon: '◌', key: 'categoryHygiene' },
   { id: 'jobs', icon: '□', key: 'categoryJobs' },
+  { id: 'education', icon: '▤', key: 'categoryEducation' },
+  { id: 'family', icon: '◇', key: 'categoryFamily' },
   { id: 'legal', icon: '§', key: 'categoryLegal' },
-  { id: 'family', icon: '◇', key: 'categoryFamily' }
+  { id: 'benefits', icon: '✓', key: 'categoryBenefits' },
+  { id: 'disability', icon: '○', key: 'categoryDisability' },
+  { id: 'veteran', icon: '★', key: 'categoryVeteran' },
+  { id: 'immigration', icon: '◎', key: 'categoryImmigration' },
+  { id: 'internet', icon: '⌘', key: 'categoryInternet' }
 ];
 
 const CATEGORY_KEYS = Object.fromEntries(CATEGORY_CONFIG.map(item => [item.id, item.key]));
-const EXTRA_CATEGORIES = [
-  { id: 'safe', icon: '◆', query: 'domestic violence safe place crisis center' },
-  { id: 'hygiene', icon: '◌', query: 'free shower laundry hygiene services' }
-];
-const categories = [...legacyCategories, ...EXTRA_CATEGORIES];
+const categories = legacyCategories;
 const STATUS_CODES = ['notContacted', 'called', 'confirmed', 'unavailable'];
 const STATUS_STORAGE = {
   notContacted: 'Not contacted',
@@ -105,7 +107,7 @@ const state = {
   page: 'home',
   lang: ['en', 'zh', 'es'].includes(initialLanguage) ? initialLanguage : 'en',
   languageExplicit: Boolean(safeStorageGet(STORAGE.languageExplicit, false)),
-  category: '',
+  category: 'all',
   otherNeed: '',
   query: '',
   location: typeof initialLocation === 'string' ? initialLocation : '',
@@ -218,7 +220,6 @@ function detectCategories(query) {
   const detected = Object.entries(keywordMap)
     .filter(([, words]) => words.some(word => text.includes(word)))
     .map(([id]) => id);
-  if (/safe|danger|violence|abuse|segur|violencia|安全|家暴/.test(text)) detected.push('safe');
   if (/shower|laundry|hygiene|ducha|lavander|淋浴|洗衣/.test(text)) detected.push('hygiene');
   return [...new Set(detected)];
 }
@@ -239,10 +240,19 @@ function distanceDisplay(miles) {
 
 function staticMatches() {
   if (!state.searched) return [];
-  const wanted = state.category && state.category !== 'other'
+  const wanted = state.category && !['all', 'other'].includes(state.category)
     ? [state.category]
     : detectCategories(state.otherNeed);
   let rows = sourceResources.map(resource => normalizeResource(resource, state.lang));
+  rows = rows.filter(resource => {
+    const original = sourceResources.find(item => String(item.id) === resource.id);
+    const isLocationBound = Boolean(
+      original?.serviceAreas?.length
+      || original?.serviceAreaZipRanges?.length
+      || original?.serviceAreaZipPrefixes?.length
+    );
+    return !isLocationBound || servesLocation(original, state.location);
+  });
   if (wanted.length) {
     rows = rows.filter(resource => resource.category === 'all'
       || wanted.includes(resource.category)
@@ -326,7 +336,8 @@ function header() {
 
 function communityLink() {
   return `<div class="safety" aria-label="${attr(tr('communitySupport'))}">
-    <a href="tel:211"><strong>211</strong> ${tr('communitySupport')}</a>
+    <span><strong>211</strong> ${tr('communitySupport')}</span>
+    <a class="call-211" href="tel:211" aria-label="${attr(tr('call211'))}"><span aria-hidden="true">☎</span> ${tr('call211')}</a>
   </div>`;
 }
 
@@ -341,8 +352,7 @@ function statusMessages() {
 }
 
 function categoryOptions(selected = state.category) {
-  return `<option value="">${tr('needChoose')}</option>
-    ${CATEGORY_CONFIG.map(item => `<option value="${item.id}" ${selected === item.id ? 'selected' : ''}>${tr(item.key)}</option>`).join('')}
+  return `${CATEGORY_CONFIG.map(item => `<option value="${item.id}" ${selected === item.id ? 'selected' : ''}>${tr(item.key)}</option>`).join('')}
     <option value="other" ${selected === 'other' ? 'selected' : ''}>${tr('needOther')}</option>`;
 }
 
@@ -356,40 +366,38 @@ function radiusOptions() {
 
 function searchBox(compact = false) {
   return `<form id="searchForm" class="search-box search-box-v2 ${compact ? 'compact' : ''}" novalidate>
-    <label>
-      <span>${tr('needLabel')}</span>
-      <select id="needSelect" name="need">${categoryOptions()}</select>
-    </label>
-    ${state.category === 'other' ? `<label>
+    <div class="search-primary-row">
+      <label class="search-location">
+        <span>${tr('locationLabel')}</span>
+        <input id="locationInput" name="location" value="${attr(state.location)}" placeholder="${attr(tr('locationPlaceholder'))}" autocomplete="postal-code" aria-describedby="location-privacy">
+      </label>
+      <label class="search-service">
+        <span>${tr('needLabel')}</span>
+        <select id="needSelect" name="need">${categoryOptions()}</select>
+      </label>
+      <label class="search-distance">
+        <span>${tr('radius')}</span>
+        <select id="radius" name="radius">${radiusOptions()}</select>
+      </label>
+      <button class="primary search-submit" type="submit">⌕ ${tr('findResources')}</button>
+    </div>
+    ${state.category === 'other' ? `<label class="search-other">
       <span>${tr('needOtherLabel')}</span>
       <input id="otherNeedInput" name="otherNeed" value="${attr(state.otherNeed)}" placeholder="${attr(tr('needOtherPlaceholder'))}">
     </label>` : ''}
-    <label>
-      <span>${tr('locationLabel')}</span>
-      <input id="locationInput" name="location" value="${attr(state.location)}" placeholder="${attr(tr('locationPlaceholder'))}" autocomplete="postal-code" aria-describedby="location-privacy">
+    <div class="search-options-row">
       <small id="location-privacy">${tr('locationPrivacy')}</small>
-    </label>
-    <label>
-      <span>${tr('distanceUnit')}</span>
-      <select id="distanceUnit" name="unit">
+      <label><span>${tr('distanceUnit')}</span><select id="distanceUnit" name="unit">
         <option value="mi" ${state.unit === 'mi' ? 'selected' : ''}>${tr('miles')}</option>
         <option value="km" ${state.unit === 'km' ? 'selected' : ''}>${tr('kilometers')}</option>
-      </select>
-    </label>
-    <label>
-      <span>${tr('radius')}</span>
-      <select id="radius" name="radius">${radiusOptions()}</select>
-    </label>
-    <label>
-      <span>${tr('travelMode')}</span>
-      <select id="travelMode" name="travelMode">
+      </select></label>
+      <label><span>${tr('travelMode')}</span><select id="travelMode" name="travelMode">
         <option value="walking" ${state.travelMode === 'walking' ? 'selected' : ''}>${tr('walking')}</option>
         <option value="transit" ${state.travelMode === 'transit' ? 'selected' : ''}>${tr('transit')}</option>
         <option value="driving" ${state.travelMode === 'driving' ? 'selected' : ''}>${tr('driving')}</option>
-      </select>
-    </label>
-    <button type="button" class="secondary" data-gps>◎ ${tr('useLocation')}</button>
-    <button class="primary" type="submit">⌕ ${tr('findResources')}</button>
+      </select></label>
+      <button type="button" class="secondary" data-gps>◎ ${tr('useLocation')}</button>
+    </div>
   </form>`;
 }
 
@@ -565,7 +573,19 @@ function resourceCard(raw, options = {}) {
   const inPlan = state.helperPlan.some(item => item.id === resource.id);
   const compared = state.compareIds.has(resource.id);
   const site = safeUrl(resource.officialWebsite || resource.website);
-  const application = safeUrl(resource.registrationUrl);
+  const applicationLink = resource.applicationLinks.find(link => link.type === 'application') || resource.applicationLinks[0];
+  const application = safeUrl(applicationLink?.url || resource.registrationUrl);
+  const applicationLabel = applicationLink
+    ? applicationLink.label || tr({
+      application: 'startApplication',
+      eligibility: 'checkEligibility',
+      questionnaire: 'completeQuestionnaire',
+      appointment: 'scheduleAppointment',
+      download: 'downloadApplication',
+      documents: 'viewRequiredDocuments',
+      contact: 'contactIntake'
+    }[applicationLink.type] || 'openApplication')
+    : tr('officialApplication');
   const address = resource.address || tr('addressUnavailable');
   return `<article class="resource-card" data-resource-card="${attr(resource.id)}">
     <div class="card-top">
@@ -590,7 +610,7 @@ function resourceCard(raw, options = {}) {
       ${resource.phone ? `<a class="primary" href="tel:${attr(phoneHref(resource.phone))}">☎ ${tr('call')}</a>` : ''}
       <a class="secondary" href="${attr(directionsUrl(resource, 'walking'))}" target="_blank" rel="noopener noreferrer">⌖ ${tr('walkingDirections')}</a>
       ${state.travelMode !== 'walking' ? `<a class="ghost" href="${attr(directionsUrl(resource))}" target="_blank" rel="noopener noreferrer">${state.travelMode === 'transit' ? tr('transitDirections') : tr('drivingDirections')}</a>` : ''}
-      ${application ? `<a class="ghost" href="${attr(application)}" target="_blank" rel="noopener noreferrer">${tr('officialApplication')} ↗</a>` : site ? `<a class="ghost" href="${attr(site)}" target="_blank" rel="noopener noreferrer">${tr('officialWebsite')} ↗</a>` : ''}
+      ${application ? `<a class="ghost" href="${attr(application)}" target="_blank" rel="noopener noreferrer">${esc(applicationLabel)} ↗</a>` : site ? `<a class="ghost" href="${attr(site)}" target="_blank" rel="noopener noreferrer">${tr('officialWebsite')} ↗</a>` : ''}
     </div>
     <div class="card-actions card-tools">
       <button class="text-action" data-requirements="${attr(resource.id)}">${tr('viewRequirements')}</button>
@@ -755,6 +775,7 @@ function eligibilityMissingLabel(value) {
 function eligibilityField(question, answer) {
   const field = question.field;
   const labelKey = eligibilityFieldKey(field);
+  const label = question.question || tr(labelKey);
   const options = {
     age: [['17', 'under18'], ['21', 'age18to24'], ['40', 'age25to59'], ['65', 'age60plus']],
     ageRange: [['17', 'under18'], ['21', 'age18to24'], ['40', 'age25to59'], ['65', 'age60plus']],
@@ -767,13 +788,26 @@ function eligibilityField(question, answer) {
     veteranStatus: [['yes', 'yes'], ['no', 'no'], ['preferNot', 'preferNot']],
     identification: [['yes', 'yes'], ['no', 'no'], ['some', 'someDocuments']]
   }[field];
-  if (['householdSize', 'dependents'].includes(field)) {
-    return `<label><span>${tr(labelKey)}</span><input type="number" min="0" max="20" data-eligibility-field="${field}" value="${attr(answer || '')}"></label>`;
+  if (['lte', 'gte', 'between', 'incomeTable'].includes(question.operator) || ['householdSize', 'dependents'].includes(field)) {
+    return `<label><span>${esc(label)}</span><input type="number" min="0" data-eligibility-field="${field}" value="${attr(answer || '')}"></label>`;
+  }
+  if (question.operator === 'eq' && String(question.value).toLowerCase() === 'yes') {
+    return `<label><span>${esc(label)}</span><select data-eligibility-field="${field}">
+      <option value="">${tr('chooseAnswer')}</option>
+      <option value="yes" ${String(answer) === 'yes' ? 'selected' : ''}>${tr('yes')}</option>
+      <option value="no" ${String(answer) === 'no' ? 'selected' : ''}>${tr('no')}</option>
+    </select></label>`;
+  }
+  if (question.operator === 'in' && Array.isArray(question.value)) {
+    return `<label><span>${esc(label)}</span><select data-eligibility-field="${field}">
+      <option value="">${tr('chooseAnswer')}</option>
+      ${question.value.map(value => `<option value="${attr(value)}" ${String(answer) === String(value) ? 'selected' : ''}>${esc(value)}</option>`).join('')}
+    </select></label>`;
   }
   if (!options) {
-    return `<label><span>${tr(labelKey)}</span><input data-eligibility-field="${field}" value="${attr(answer || '')}"></label>`;
+    return `<label><span>${esc(label)}</span><input data-eligibility-field="${field}" value="${attr(answer || '')}"></label>`;
   }
-  return `<label><span>${tr(labelKey)}</span><select data-eligibility-field="${field}">
+  return `<label><span>${esc(label)}</span><select data-eligibility-field="${field}">
     <option value="">${tr('chooseAnswer')}</option>
     ${options.map(([value, key]) => `<option value="${value}" ${String(answer) === value ? 'selected' : ''}>${tr(key)}</option>`).join('')}
   </select></label>`;
@@ -838,12 +872,64 @@ function statusTranslation(status) {
   }[status] || 'unableDetermine';
 }
 
+const ELIGIBILITY_DETAIL_KEYS = {
+  whoQualifies: 'whoQualifies',
+  geographicRestrictions: 'geographicRestrictions',
+  incomeRequirements: 'incomeRequirements',
+  ageHouseholdRequirements: 'ageHouseholdRequirements',
+  importantExceptions: 'importantExceptions',
+  applicationDeadline: 'applicationDeadline'
+};
+
+function eligibilityDetailsBlock(resource) {
+  const details = resource.eligibilityDetails || {};
+  const rows = Object.entries(ELIGIBILITY_DETAIL_KEYS)
+    .filter(([field]) => details[field])
+    .map(([field, key]) => `<dt>${tr(key)}</dt><dd>${esc(details[field])}</dd>`)
+    .join('');
+  return rows ? `<dl class="eligibility-details">${rows}</dl>` : '';
+}
+
+const APPLICATION_ACTION_KEYS = {
+  application: 'startApplication',
+  eligibility: 'checkEligibility',
+  questionnaire: 'completeQuestionnaire',
+  appointment: 'scheduleAppointment',
+  download: 'downloadApplication',
+  documents: 'viewRequiredDocuments',
+  contact: 'contactIntake'
+};
+
+function applicationActions(guide) {
+  const links = guide.applicationActions.map(action => {
+    const label = action.label || tr(APPLICATION_ACTION_KEYS[action.type] || 'openApplication');
+    return `<a class="${action.type === 'application' ? 'primary' : 'secondary'}" href="${attr(action.url)}" target="_blank" rel="noopener noreferrer">${esc(label)} ↗</a>`;
+  });
+  if (!guide.applicationActions.length && guide.phone) {
+    links.push(`<a class="primary" href="tel:${attr(phoneHref(guide.phone))}">☎ ${tr('callToApply')}</a>`);
+  }
+  return links.join('');
+}
+
+function applicationMethods(methods = []) {
+  const keys = {
+    online: 'applyOnline',
+    phone: 'applyByPhone',
+    mail: 'applyByMail',
+    email: 'applyByEmail',
+    fax: 'applyByFax',
+    inPerson: 'applyInPerson'
+  };
+  return methods.map(method => tr(keys[method] || 'confirmOrganization')).join(' · ');
+}
+
 function eligibilityResult(result, resource) {
   if (!result) return '';
   const source = safeUrl(result.program?.eligibilitySourceUrl || resource.sourceUrls[0]);
   return `<section class="eligibility-result" aria-live="polite">
     <h2>${tr(statusTranslation(result.status))}</h2>
     <p>${result.status === 'Unable to determine' ? tr('noLocalRules') : tr('nearbyRulesDiffer')}</p>
+    ${eligibilityDetailsBlock(resource)}
     ${result.passed?.length ? `<h3>${tr('satisfied')}</h3><ul>${result.passed.map(item => `<li>${tr('requirementMet', { requirement: tr(eligibilityFieldKey(item.field)) })}</li>`).join('')}</ul>` : ''}
     ${result.failed?.length ? `<h3>${tr('notSatisfied')}</h3><ul>${result.failed.map(item => `<li>${tr('requirementNotMet', { requirement: tr(eligibilityFieldKey(item.field)) })}</li>`).join('')}</ul>` : ''}
     ${result.missing?.length ? `<h3>${tr('missingInfo')}</h3><ul>${result.missing.map(item => `<li>${esc(eligibilityMissingLabel(item))}</li>`).join('')}</ul>` : ''}
@@ -874,14 +960,20 @@ function registrationPage() {
   if (step === 1) {
     content = `<h2>${tr('registrationStepApply')}</h2>
       ${guide.notRequired ? `<p>${tr('registrationNotRequired')}</p>` : ''}
-      ${guide.applicationUrl ? `<p>${tr('registrationReview')}</p><a class="primary" href="${attr(guide.applicationUrl)}" target="_blank" rel="noopener noreferrer">${tr('openApplication')} ↗</a>` : `
+      ${guide.applicationSteps.length ? `<p>${tr('applicationProcess')}</p><ol class="application-steps">${guide.applicationSteps.map(item => `<li>${esc(item)}</li>`).join('')}</ol>` : ''}
+      ${guide.applicationMethods.length ? `<p><strong>${tr('waysToApply')}:</strong> ${applicationMethods(guide.applicationMethods)}</p>` : ''}
+      ${guide.applicationActions.length ? `<p>${tr('registrationReview')}</p><div class="application-actions">${applicationActions(guide)}</div>` : `
         <p>${guide.phoneOrInPerson ? tr('registrationPhoneOnly') : tr('registrationNoForm')}</p>
         <p>${tr('registrationUseContact')}</p>
-        <div class="card-actions">${guide.phone ? `<a class="primary" href="tel:${attr(phoneHref(guide.phone))}">${tr('call')}</a>` : ''}${guide.officialWebsite ? `<a class="secondary" href="${attr(safeUrl(guide.officialWebsite))}" target="_blank" rel="noopener noreferrer">${tr('openOfficialSite')} ↗</a>` : ''}</div>`}
+        <div class="application-actions">${applicationActions(guide)}${guide.officialWebsite ? `<a class="secondary" href="${attr(safeUrl(guide.officialWebsite))}" target="_blank" rel="noopener noreferrer">${tr('openOfficialSite')} ↗</a>` : ''}</div>`}
+      ${guide.applicationDeadline ? `<p><strong>${tr('applicationDeadline')}:</strong> ${esc(guide.applicationDeadline)}</p>` : ''}
+      ${guide.appointmentRequirement ? `<p><strong>${tr('appointmentRequirements')}:</strong> ${esc(guide.appointmentRequirement)}</p>` : ''}
+      ${guide.applicationLastVerified ? `<p><strong>${tr('lastVerified')}:</strong> ${esc(guide.applicationLastVerified)}</p>` : ''}
       <details><summary>${tr('callingScript')}</summary><p>${tr('callingScriptText', { program: resource.name })}</p></details>`;
   }
   if (step === 2) {
-    content = `<h2>${tr('registrationStepConfirm')}</h2><p>${tr('registrationNeverSubmit')}</p><p>${tr('confirmOrganization')}</p>
+    content = `<h2>${tr('registrationStepConfirm')}</h2><p>${tr('registrationNeverSubmit')}</p>
+      <p>${esc(guide.afterApplying || tr('confirmOrganization'))}</p>
       <div class="registration-summary">
         <p><strong>${tr('localProgramUsed')}:</strong> ${esc(resource.name)}</p>
         <p><strong>${tr('locationUsed')}:</strong> ${esc(state.location || tr('notEntered'))}</p>
@@ -910,6 +1002,7 @@ function requirementsPanel() {
     <p><strong>${tr('localProgramUsed')}:</strong> ${esc(resource.name)}</p>
     <p><strong>${tr('locationUsed')}:</strong> ${esc(state.location || tr('notEntered'))}</p>
     <p>${esc(local?.localEligibilityVerified ? resource.eligibilitySummary : tr('noLocalRules'))}</p>
+    ${eligibilityDetailsBlock(resource)}
     ${resource.requiredDocuments.length ? `<h3>${tr('documents')}</h3><ul>${resource.requiredDocuments.map(item => `<li>${esc(item)}</li>`).join('')}</ul>` : ''}
     <p><strong>${tr('lastVerified')}:</strong> ${esc(local?.eligibilityLastVerified || tr('nonePublished'))}</p>
     ${source ? `<a href="${attr(source)}" target="_blank" rel="noopener noreferrer">${tr('fullRequirements')} ↗</a>` : ''}
@@ -1041,7 +1134,7 @@ async function searchNearby({ coordinates = null, quiet = false } = {}) {
       lng: point.lng,
       radius: effectiveRadiusMiles()
     });
-    const desired = state.category && state.category !== 'other'
+    const desired = state.category && !['all', 'other'].includes(state.category)
       ? [state.category]
       : detectCategories(state.otherNeed);
     if (desired.length) rows = rows.filter(resource => desired.includes(resource.category));

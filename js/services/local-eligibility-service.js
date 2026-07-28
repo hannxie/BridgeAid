@@ -19,7 +19,12 @@ export function servesLocation(resource, location) {
     ...(resource.serviceAreas || [])
   ].join(' ').toLowerCase();
   const tokens = locationTokens(location);
-  return Boolean(tokens.length && tokens.some(token => searchable.includes(token)));
+  const zip = Number(String(location || '').match(/\b\d{5}\b/)?.[0]);
+  const inPublishedRange = Number.isFinite(zip) && (resource.serviceAreaZipRanges || [])
+    .some(([minimum, maximum]) => zip >= Number(minimum) && zip <= Number(maximum));
+  const matchesPrefix = Number.isFinite(zip) && (resource.serviceAreaZipPrefixes || [])
+    .some(prefix => String(zip).startsWith(String(prefix)));
+  return Boolean((tokens.length && tokens.some(token => searchable.includes(token))) || inPublishedRange || matchesPrefix);
 }
 
 export function localProgramForResource(resource, location) {
@@ -41,10 +46,12 @@ export function localEligibilityQuestions(resource, location, answers = {}) {
   const program = localProgramForResource(resource, location);
   if (!program?.localEligibilityVerified) return [];
   return program.eligibilityRules
-    .filter(rule => rule?.field)
+    .filter(rule => rule?.field && rule.operator !== 'always')
     .map(rule => ({
       field: rule.field,
       question: rule.question || rule.label || rule.field,
+      operator: rule.operator || '',
+      value: rule.value,
       answered: answers[rule.field] !== undefined && answers[rule.field] !== ''
     }));
 }

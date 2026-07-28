@@ -1,4 +1,4 @@
-const CACHE = 'bridgeaid-v6';
+const CACHE = 'bridgeaid-v7';
 const ASSETS = [
   './',
   './index.html',
