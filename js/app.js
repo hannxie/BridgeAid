@@ -1,4 +1,5 @@
 import { categories as legacyCategories, keywordMap, resources as sourceResources } from '../data/resources.js';
+import { translate, detectMessageLanguage, requestedLanguage } from './localization.js';
 import {
   safeStorageGet,
   safeStorageSet,
@@ -14,13 +15,29 @@ import {
   cacheKey,
   readCachedSearch,
   writeCachedSearch,
-  mergeDuplicates,
-  textFor
+  mergeDuplicates
 } from './services/resource-service.js';
-import { geocodeLocation, fetchNearbyResources } from './services/location-service.js';
-import { evaluateEligibility, questionsForRules, summarizeEligibility } from './services/eligibility-service.js';
-import { registrationSteps } from './services/registration-service.js';
-import { routeAssistantRequest } from './services/orchestrator.js';
+import {
+  geocodeLocation,
+  fetchNearbyResources
+} from './services/location-service.js';
+import {
+  localProgramForResource,
+  localEligibilityQuestions,
+  evaluateLocalEligibility
+} from './services/local-eligibility-service.js';
+import { registrationGuidance } from './services/registration-service.js';
+import {
+  answerGroundedAssistant,
+  assistantCategory,
+  locationFromMessage
+} from './services/grounded-assistant.js';
+import {
+  createCorrectionReport,
+  queueCorrection,
+  verifyCorrectionReport
+} from './services/correction-service.js';
+import { verifyResourceSchedule } from './services/schedule-verification-service.js';
 import { escapeHtml, sanitizePhone, safeExternalUrl } from './services/html-service.js';
 import {
   addPlanResource,
@@ -33,194 +50,106 @@ import {
 const STORAGE = {
   mode: 'bridgeaid-mode',
   location: 'bridgeaid-location',
+  language: 'ba-lang',
+  languageExplicit: 'bridgeaid-language-explicit',
+  unit: 'bridgeaid-distance-unit',
+  saved: 'ba-saved',
   helperIntake: 'bridgeaid-helper-intake',
   helperPlan: 'bridgeaid-helper-plan',
   cache: 'bridgeaid-resource-cache',
   searches: 'bridgeaid-saved-searches',
-  language: 'ba-lang',
-  saved: 'ba-saved'
+  corrections: 'bridgeaid-correction-queue'
 };
 
-const SELF_CATEGORIES = [
-  { id: 'food', icon: '●', en: 'Food today', es: 'Comida hoy', zh: '今天的食物' },
-  { id: 'shelter', icon: '⌂', en: 'Sleep tonight', es: 'Dormir esta noche', zh: '今晚住宿' },
-  { id: 'safe', icon: '◆', en: 'Safe place', es: 'Lugar seguro', zh: '安全场所' },
-  { id: 'health', icon: '+', en: 'Health care', es: 'Atención médica', zh: '医疗保健' },
-  { id: 'hygiene', icon: '◌', en: 'Shower or laundry', es: 'Ducha o lavandería', zh: '淋浴或洗衣' },
-  { id: 'transport', icon: '→', en: 'Transportation', es: 'Transporte', zh: '交通' },
-  { id: 'benefits', icon: '✓', en: 'Benefits', es: 'Beneficios', zh: '福利' },
-  { id: 'jobs', icon: '□', en: 'Jobs', es: 'Empleo', zh: '就业' },
-  { id: 'legal', icon: '§', en: 'Legal help', es: 'Ayuda legal', zh: '法律帮助' }
+const CATEGORY_CONFIG = [
+  { id: 'food', icon: '●', key: 'categoryFood' },
+  { id: 'shelter', icon: '⌂', key: 'categoryShelter' },
+  { id: 'safe', icon: '◆', key: 'categorySafe' },
+  { id: 'health', icon: '+', key: 'categoryHealth' },
+  { id: 'mental', icon: '◐', key: 'categoryMental' },
+  { id: 'hygiene', icon: '◌', key: 'categoryHygiene' },
+  { id: 'transport', icon: '→', key: 'categoryTransport' },
+  { id: 'benefits', icon: '✓', key: 'categoryBenefits' },
+  { id: 'jobs', icon: '□', key: 'categoryJobs' },
+  { id: 'legal', icon: '§', key: 'categoryLegal' },
+  { id: 'family', icon: '◇', key: 'categoryFamily' }
 ];
 
+const CATEGORY_KEYS = Object.fromEntries(CATEGORY_CONFIG.map(item => [item.id, item.key]));
 const EXTRA_CATEGORIES = [
-  { id: 'safe', icon: '◆', label: { en: 'Safe place', es: 'Lugar seguro', zh: '安全场所' }, query: 'domestic violence safe place crisis center' },
-  { id: 'hygiene', icon: '◌', label: { en: 'Shower & laundry', es: 'Ducha y lavandería', zh: '淋浴和洗衣' }, query: 'free shower laundry hygiene services' }
+  { id: 'safe', icon: '◆', query: 'domestic violence safe place crisis center' },
+  { id: 'hygiene', icon: '◌', query: 'free shower laundry hygiene services' }
 ];
-
 const categories = [...legacyCategories, ...EXTRA_CATEGORIES];
-
-const COPY = {
-  en: {
-    tagline: 'Trusted help. Clear next steps.',
-    selfMode: 'I need help',
-    helperMode: 'I’m helping someone',
-    switchMode: 'Switch how you are using BridgeAid',
-    home: 'Home',
-    find: 'Find help',
-    saved: 'Saved',
-    about: 'Privacy',
-    selfHero: 'What do you need right now?',
-    selfSub: 'Find free help near you.',
-    helperHero: 'Help someone find support.',
-    helperSub: 'Answer a few questions to build a resource plan.',
-    need: 'What help is needed?',
-    needPlaceholder: 'Food today, a safe place, health care…',
-    search: 'Find resources',
-    gps: 'Use my location',
-    results: 'Resource results',
-    official: 'Official site',
-    call: 'Call',
-    directions: 'Directions',
-    select: 'Select for plan',
-    selected: 'In plan',
-    compare: 'Compare',
-    requirements: 'View requirements',
-    eligibility: 'Check eligibility',
-    register: 'Registration help',
-    report: 'Report incorrect info',
-    confirm: 'Confirm availability',
-    source: 'Source',
-    checked: 'Last verified',
-    uncertain: 'Schedule uncertain — call ahead',
-    noResults: 'No resources match these filters. Clear a filter or broaden the search.',
-    cached: 'Showing saved results while live information is unavailable.',
-    stale: 'Saved results may be out of date. Call to confirm.',
-    offline: 'You are offline. Saved and national resources are still available.',
-    assistantSelf: 'What do you need help with right now?',
-    assistantHelper: 'Tell me what the person needs and any limits we should consider.'
-  },
-  es: {
-    tagline: 'Ayuda confiable. Próximos pasos claros.',
-    selfMode: 'Necesito ayuda',
-    helperMode: 'Estoy ayudando a alguien',
-    switchMode: 'Cambiar cómo usa BridgeAid',
-    home: 'Inicio',
-    find: 'Buscar ayuda',
-    saved: 'Guardado',
-    about: 'Privacidad',
-    selfHero: '¿Qué necesita ahora?',
-    selfSub: 'Encuentre ayuda gratuita cerca.',
-    helperHero: 'Ayude a alguien a encontrar apoyo.',
-    helperSub: 'Responda unas preguntas para crear un plan.',
-    need: '¿Qué ayuda se necesita?',
-    needPlaceholder: 'Comida hoy, lugar seguro, atención médica…',
-    location: 'Ciudad, código postal, condado, barrio, dirección o punto de referencia',
-    search: 'Buscar recursos',
-    gps: 'Usar mi ubicación',
-    results: 'Resultados',
-    official: 'Sitio oficial',
-    call: 'Llamar',
-    directions: 'Direcciones',
-    select: 'Añadir al plan',
-    selected: 'En el plan',
-    compare: 'Comparar',
-    requirements: 'Ver requisitos',
-    eligibility: 'Revisar elegibilidad',
-    register: 'Ayuda para solicitar',
-    report: 'Reportar información incorrecta',
-    confirm: 'Confirmar disponibilidad',
-    source: 'Fuente',
-    checked: 'Última verificación',
-    uncertain: 'Horario incierto — llame antes',
-    noResults: 'Ningún recurso coincide con los filtros.',
-    cached: 'Mostrando resultados guardados.',
-    stale: 'Los resultados guardados pueden estar desactualizados.',
-    offline: 'Está sin conexión. Los recursos guardados siguen disponibles.',
-    assistantSelf: '¿Con qué necesita ayuda ahora?',
-    assistantHelper: 'Dígame qué necesita la persona y qué límites debemos considerar.'
-  },
-  zh: {
-    tagline: '可信帮助，清晰步骤。',
-    selfMode: '我需要帮助',
-    helperMode: '我在帮助别人',
-    switchMode: '切换使用方式',
-    home: '首页',
-    find: '寻找帮助',
-    saved: '已保存',
-    about: '隐私',
-    selfHero: '您现在需要什么？',
-    selfSub: '查找附近的免费帮助。',
-    helperHero: '帮助他人获得支持。',
-    helperSub: '回答几个问题，建立资源计划。',
-    need: '需要什么帮助？',
-    needPlaceholder: '今天的食物、安全场所、医疗…',
-    location: '城市、邮编、县、社区、地址或地标',
-    search: '查找资源',
-    gps: '使用我的位置',
-    results: '资源结果',
-    official: '官方网站',
-    call: '致电',
-    directions: '路线',
-    select: '加入计划',
-    selected: '已加入',
-    compare: '比较',
-    requirements: '查看要求',
-    eligibility: '检查资格',
-    register: '申请帮助',
-    report: '报告错误信息',
-    confirm: '确认可用性',
-    source: '来源',
-    checked: '最后核实',
-    uncertain: '时间不确定——请提前致电',
-    noResults: '没有资源符合这些筛选条件。',
-    cached: '正在显示保存的结果。',
-    stale: '保存的结果可能已过期。',
-    offline: '您当前离线。保存的资源仍然可用。',
-    assistantSelf: '您现在需要什么帮助？',
-    assistantHelper: '请告诉我此人需要什么以及需要考虑的限制。'
-  }
+const STATUS_CODES = ['notContacted', 'called', 'confirmed', 'unavailable'];
+const STATUS_STORAGE = {
+  notContacted: 'Not contacted',
+  called: 'Called',
+  confirmed: 'Confirmed',
+  unavailable: 'Unavailable'
+};
+const STATUS_KEYS = {
+  notContacted: 'statusNotContacted',
+  called: 'statusCalled',
+  confirmed: 'statusConfirmed',
+  unavailable: 'statusUnavailable'
 };
 
-const emptyFilters = {
-  openNow: false,
-  availableToday: false,
-  walkIn: false,
-  noId: false,
-  noRegistration: false,
-  accessible: false,
-  language: '',
-  confidence: ''
-};
-
+const defaultUnit = /^en-US/i.test(navigator.language || '') ? 'mi' : 'km';
 const initialLocation = safeStorageGet(STORAGE.location, safeStorageGet('ba-location', ''));
+const initialLanguage = safeStorageGet(STORAGE.language, 'en');
+
 const state = {
   mode: loadMode(),
   modePromptOpen: false,
   page: 'home',
-  lang: ['en', 'es', 'zh'].includes(safeStorageGet(STORAGE.language, 'en')) ? safeStorageGet(STORAGE.language, 'en') : 'en',
+  lang: ['en', 'zh', 'es'].includes(initialLanguage) ? initialLanguage : 'en',
+  languageExplicit: Boolean(safeStorageGet(STORAGE.languageExplicit, false)),
+  category: '',
+  otherNeed: '',
   query: '',
   location: typeof initialLocation === 'string' ? initialLocation : '',
   coordinates: null,
-  radius: 5,
-  category: 'all',
-  filters: { ...emptyFilters },
-  saved: new Set(Array.isArray(safeStorageGet(STORAGE.saved, [])) ? safeStorageGet(STORAGE.saved, []) : []),
+  radiusValue: 5,
+  unit: ['mi', 'km'].includes(safeStorageGet(STORAGE.unit, defaultUnit)) ? safeStorageGet(STORAGE.unit, defaultUnit) : defaultUnit,
+  travelMode: 'walking',
+  searched: false,
+  filters: {
+    openNow: false,
+    availableToday: false,
+    walkIn: false,
+    noId: false,
+    noRegistration: false,
+    accessible: false,
+    language: ''
+  },
+  saved: new Set(safeArray(STORAGE.saved)),
   liveResults: [],
   resolvedLocation: '',
   loading: false,
-  error: '',
-  cacheNotice: '',
+  errorKey: '',
+  errorText: '',
+  noticeKey: '',
   offline: !navigator.onLine,
+  storageWarning: false,
   helperIntake: safeObject(STORAGE.helperIntake),
   helperPlan: safeArray(STORAGE.helperPlan),
   compareIds: new Set(),
-  selectedResource: null,
+  selectedResourceId: '',
   panel: '',
-  eligibilityAnswers: {},
+  registrationStep: 0,
+  reportSubmitted: false,
+  corrections: safeArray(STORAGE.corrections),
+  eligibility: {
+    resourceId: '',
+    location: typeof initialLocation === 'string' ? initialLocation : '',
+    answers: {},
+    step: 0,
+    started: false
+  },
   chatOpen: false,
   chatMessages: [],
-  storageWarning: ''
+  chatContext: {}
 };
 
 function safeObject(key) {
@@ -234,55 +163,112 @@ function safeArray(key) {
 }
 
 const app = document.querySelector('#app');
-const t = key => COPY[state.lang]?.[key] || COPY.en[key] || key;
-const tx = value => textFor(value, state.lang);
+const tr = (key, variables = {}, language = state.lang) => translate(language, key, variables);
 const esc = escapeHtml;
-const attr = esc;
+const attr = escapeHtml;
+const safeUrl = safeExternalUrl;
 const phoneHref = sanitizePhone;
-const category = id => categories.find(item => item.id === id) || categories[0];
 
-function safeUrl(value) {
-  return safeExternalUrl(value);
-}
-
-function persistPreference(key, value) {
-  if (!safeStorageSet(key, value)) state.storageWarning = 'Your browser blocked local saving. This session still works, but changes may not persist.';
+function persist(key, value) {
+  if (!safeStorageSet(key, value)) state.storageWarning = true;
 }
 
 function persistShared() {
-  persistPreference(STORAGE.location, state.location);
-  persistPreference(STORAGE.language, state.lang);
-  persistPreference(STORAGE.saved, [...state.saved]);
+  persist(STORAGE.location, state.location);
+  persist(STORAGE.language, state.lang);
+  persist(STORAGE.languageExplicit, state.languageExplicit);
+  persist(STORAGE.unit, state.unit);
+  persist(STORAGE.saved, [...state.saved]);
 }
 
 function persistHelper() {
-  persistPreference(STORAGE.helperIntake, state.helperIntake);
-  persistPreference(STORAGE.helperPlan, state.helperPlan);
+  persist(STORAGE.helperIntake, state.helperIntake);
+  persist(STORAGE.helperPlan, state.helperPlan);
+}
+
+function captureSearchDraft() {
+  const need = document.querySelector('#needSelect');
+  const other = document.querySelector('#otherNeedInput');
+  const location = document.querySelector('#locationInput');
+  const radius = document.querySelector('#radius');
+  const travelMode = document.querySelector('#travelMode');
+  if (need) state.category = need.value;
+  if (other) state.otherNeed = other.value;
+  if (location) state.location = location.value;
+  if (radius) state.radiusValue = Number(radius.value) || state.radiusValue;
+  if (travelMode) state.travelMode = travelMode.value;
+}
+
+function categoryLabel(id, language = state.lang) {
+  return tr(CATEGORY_KEYS[id] || 'categoryAll', {}, language);
+}
+
+function categoryIcon(id) {
+  return CATEGORY_CONFIG.find(item => item.id === id)?.icon
+    || categories.find(item => item.id === id)?.icon
+    || '•';
+}
+
+function categoryQuery(id) {
+  return categories.find(item => item.id === id)?.query || categoryLabel(id, 'en');
 }
 
 function detectCategories(query) {
   const text = String(query || '').toLowerCase();
-  const found = Object.entries(keywordMap)
+  const detected = Object.entries(keywordMap)
     .filter(([, words]) => words.some(word => text.includes(word)))
     .map(([id]) => id);
-  if (/safe|danger|violence|abuse/.test(text)) found.push('safe');
-  if (/shower|laundry|hygiene|wash/.test(text)) found.push('hygiene');
-  return [...new Set(found)];
+  if (/safe|danger|violence|abuse|segur|violencia|安全|家暴/.test(text)) detected.push('safe');
+  if (/shower|laundry|hygiene|ducha|lavander|淋浴|洗衣/.test(text)) detected.push('hygiene');
+  return [...new Set(detected)];
+}
+
+function searchNeed() {
+  return state.category === 'other' ? state.otherNeed.trim() : categoryLabel(state.category);
+}
+
+function effectiveRadiusMiles() {
+  return state.unit === 'km' ? state.radiusValue / 1.609344 : state.radiusValue;
+}
+
+function distanceDisplay(miles) {
+  if (miles === null || miles === undefined) return '';
+  const value = state.unit === 'km' ? miles * 1.609344 : miles;
+  return `${value.toFixed(1)} ${state.unit === 'km' ? tr('kilometers').toLowerCase() : tr('miles').toLowerCase()}`;
 }
 
 function staticMatches() {
-  const detected = detectCategories(state.query);
-  const wanted = state.category !== 'all' ? [state.category] : detected;
-  let rows = sourceResources.map(r => normalizeResource(r, state.lang));
+  if (!state.searched) return [];
+  const wanted = state.category && state.category !== 'other'
+    ? [state.category]
+    : detectCategories(state.otherNeed);
+  let rows = sourceResources.map(resource => normalizeResource(resource, state.lang));
   if (wanted.length) {
-    rows = rows.filter(r => r.category === 'all' || wanted.includes(r.category) || r.services.some(s => wanted.includes(s)));
+    rows = rows.filter(resource => resource.category === 'all'
+      || wanted.includes(resource.category)
+      || resource.services.some(service => wanted.includes(service)));
   }
   return rankResources(rows, { categories: wanted });
 }
 
 function allResults() {
-  const combined = mergeDuplicates([...state.liveResults, ...staticMatches()]);
-  return filterResources(combined, { ...state.filters, radius: state.radius });
+  if (!state.searched) return [];
+  const combined = mergeDuplicates([...state.liveResults, ...staticMatches()])
+    .map(resource => normalizeResource(resource, state.lang));
+  return filterResources(combined, {
+    ...state.filters,
+    radius: effectiveRadiusMiles()
+  });
+}
+
+function resourceById(id) {
+  return mergeDuplicates([...state.liveResults, ...sourceResources])
+    .map(resource => normalizeResource(resource, state.lang))
+    .find(resource => resource.id === id);
+}
+
+function currentResource() {
+  return resourceById(state.selectedResourceId || state.eligibility.resourceId);
 }
 
 function modeSelector() {
@@ -291,137 +277,188 @@ function modeSelector() {
     <div class="mode-dialog">
       <span class="brand-mark" aria-hidden="true">B</span>
       <p class="eyebrow">BridgeAid</p>
-      <h1 id="mode-title">How are you using BridgeAid?</h1>
+      <h1 id="mode-title">${tr('modeQuestion')}</h1>
       <div class="mode-options">
         <button class="mode-option" data-mode="self">
           <span class="mode-icon" aria-hidden="true">●</span>
-          <span><strong>I need help</strong><small>Find food, shelter, health care, and other support for yourself.</small></span>
+          <span><strong>${tr('modeSelf')}</strong><small>${tr('modeSelfDescription')}</small></span>
         </button>
         <button class="mode-option" data-mode="helper">
           <span class="mode-icon" aria-hidden="true">◎</span>
-          <span><strong>I’m helping someone</strong><small>Find and organize resources for another person.</small></span>
+          <span><strong>${tr('modeHelper')}</strong><small>${tr('modeHelperDescription')}</small></span>
         </button>
       </div>
-      ${state.mode ? '<button class="text-btn" data-close-mode>Cancel</button>' : ''}
+      ${state.mode ? `<button class="text-btn" data-close-mode>${tr('cancel')}</button>` : ''}
     </div>
   </div>`;
 }
 
 function header() {
   return `<header class="topbar">
-    <nav class="wrap nav" aria-label="Main navigation">
-      <button class="brand" data-page="home" aria-label="BridgeAid home">
+    <nav class="wrap nav" aria-label="${attr(tr('mainNavigation'))}">
+      <button class="brand" data-page="home" aria-label="${attr(tr('navHome'))}">
         <span class="logo" aria-hidden="true">B</span>
-        <span>BridgeAid<small>${t('tagline')}</small></span>
+        <span>BridgeAid<small>${tr('brandTagline')}</small></span>
       </button>
-      <button class="mobile-menu" data-menu aria-label="Open menu" aria-expanded="false">☰</button>
+      <button class="mobile-menu" data-menu aria-label="${attr(tr('openMenu'))}" aria-expanded="false">☰</button>
       <div class="nav-links" id="navLinks">
-        <button data-page="home">${t('home')}</button>
-        <button data-page="find">${t('find')}</button>
-        <button data-page="saved">${t('saved')} (${state.saved.size})</button>
-        <button data-page="about">${t('about')}</button>
+        <button data-page="home">${tr('navHome')}</button>
+        <button data-page="find">${tr('navFind')}</button>
+        <button data-page="eligibility">${tr('navEligibility')}</button>
+        <button data-page="saved">${tr('navSaved')} (${state.saved.size})</button>
+        <button data-page="privacy">${tr('navPrivacy')}</button>
       </div>
       <div class="nav-actions">
-        <button class="mode-chip" data-switch-mode aria-label="${t('switchMode')}">
+        <button class="mode-chip" data-switch-mode aria-label="${attr(tr('switchMode'))}">
           <span aria-hidden="true">${state.mode === 'helper' ? '◎' : '●'}</span>
-          ${state.mode === 'helper' ? t('helperMode') : t('selfMode')}
+          ${state.mode === 'helper' ? tr('modeHelper') : tr('modeSelf')}
         </button>
-        <label class="sr-only" for="language">Language</label>
-        <select id="language" aria-label="Language">
+        <label class="sr-only" for="language">${tr('language')}</label>
+        <select id="language" aria-label="${attr(tr('language'))}">
           <option value="en" ${state.lang === 'en' ? 'selected' : ''}>English</option>
+          <option value="zh" ${state.lang === 'zh' ? 'selected' : ''}>简体中文</option>
           <option value="es" ${state.lang === 'es' ? 'selected' : ''}>Español</option>
-          <option value="zh" ${state.lang === 'zh' ? 'selected' : ''}>中文</option>
         </select>
       </div>
     </nav>
   </header>`;
 }
 
-function emergencyLinks() {
-  return `<div class="safety" aria-label="Urgent phone support">
-    <a href="tel:911"><strong>911</strong> Immediate danger</a>
-    <a href="tel:988"><strong>988</strong> Crisis support</a>
-    <a href="tel:211"><strong>211</strong> Local services</a>
+function communityLink() {
+  return `<div class="safety" aria-label="${attr(tr('communitySupport'))}">
+    <a href="tel:211"><strong>211</strong> ${tr('communitySupport')}</a>
   </div>`;
 }
 
 function statusMessages() {
-  return `<div id="status-region" class="status-stack" aria-live="polite">
-    ${state.offline ? `<div class="offline-state">◉ ${t('offline')}</div>` : ''}
-    ${state.cacheNotice ? `<div class="cache-state">${esc(state.cacheNotice)}</div>` : ''}
-    ${state.storageWarning ? `<div class="error-state">${esc(state.storageWarning)}</div>` : ''}
-    ${state.error ? `<div class="error-state">${esc(state.error)}</div>` : ''}
+  return `<div class="status-stack" aria-live="polite">
+    ${state.offline ? `<div class="offline-state">◉ ${tr('offline')}</div>` : ''}
+    ${state.noticeKey ? `<div class="cache-state">${tr(state.noticeKey)}</div>` : ''}
+    ${state.storageWarning ? `<div class="error-state">${tr('storageBlocked')}</div>` : ''}
+    ${state.errorKey ? `<div class="error-state">${tr(state.errorKey)}</div>` : ''}
+    ${state.errorText ? `<div class="error-state">${esc(state.errorText)}</div>` : ''}
   </div>`;
+}
+
+function categoryOptions(selected = state.category) {
+  return `<option value="">${tr('needChoose')}</option>
+    ${CATEGORY_CONFIG.map(item => `<option value="${item.id}" ${selected === item.id ? 'selected' : ''}>${tr(item.key)}</option>`).join('')}
+    <option value="other" ${selected === 'other' ? 'selected' : ''}>${tr('needOther')}</option>`;
+}
+
+function radiusOptions() {
+  return [1, 5, 10, 25]
+    .map(value => `<option value="${value}" ${state.radiusValue === value ? 'selected' : ''}>${state.unit === 'km'
+      ? tr('radiusKilometers', { value })
+      : tr('radiusMiles', { value })}</option>`)
+    .join('');
 }
 
 function searchBox(compact = false) {
-  return `<form id="searchForm" class="search-box ${compact ? 'compact' : ''}" novalidate>
+  return `<form id="searchForm" class="search-box search-box-v2 ${compact ? 'compact' : ''}" novalidate>
     <label>
-      <span>${t('need')}</span>
-      <input id="needInput" name="need" value="${attr(state.query)}" placeholder="${attr(t('needPlaceholder'))}" autocomplete="off">
+      <span>${tr('needLabel')}</span>
+      <select id="needSelect" name="need">${categoryOptions()}</select>
+    </label>
+    ${state.category === 'other' ? `<label>
+      <span>${tr('needOtherLabel')}</span>
+      <input id="otherNeedInput" name="otherNeed" value="${attr(state.otherNeed)}" placeholder="${attr(tr('needOtherPlaceholder'))}">
+    </label>` : ''}
+    <label>
+      <span>${tr('locationLabel')}</span>
+      <input id="locationInput" name="location" value="${attr(state.location)}" placeholder="${attr(tr('locationPlaceholder'))}" autocomplete="postal-code" aria-describedby="location-privacy">
+      <small id="location-privacy">${tr('locationPrivacy')}</small>
     </label>
     <label>
-      <span>${t('location')}</span>
-      <input id="locationInput" name="location" value="${attr(state.location)}" placeholder="${attr(t('location'))}" autocomplete="postal-code" aria-describedby="location-privacy">
-
-    </label>
-    <label class="radius-control">
-      <span>Search radius</span>
-      <select id="radius" name="radius">
-        ${[1, 5, 10, 25].map(value => `<option value="${value}" ${state.radius === value ? 'selected' : ''}>${value} mile${value === 1 ? '' : 's'}</option>`).join('')}
+      <span>${tr('distanceUnit')}</span>
+      <select id="distanceUnit" name="unit">
+        <option value="mi" ${state.unit === 'mi' ? 'selected' : ''}>${tr('miles')}</option>
+        <option value="km" ${state.unit === 'km' ? 'selected' : ''}>${tr('kilometers')}</option>
       </select>
     </label>
-    <button type="button" class="secondary" data-gps>◎ ${t('gps')}</button>
-    <button class="primary" type="submit">⌕ ${t('search')}</button>
+    <label>
+      <span>${tr('radius')}</span>
+      <select id="radius" name="radius">${radiusOptions()}</select>
+    </label>
+    <label>
+      <span>${tr('travelMode')}</span>
+      <select id="travelMode" name="travelMode">
+        <option value="walking" ${state.travelMode === 'walking' ? 'selected' : ''}>${tr('walking')}</option>
+        <option value="transit" ${state.travelMode === 'transit' ? 'selected' : ''}>${tr('transit')}</option>
+        <option value="driving" ${state.travelMode === 'driving' ? 'selected' : ''}>${tr('driving')}</option>
+      </select>
+    </label>
+    <button type="button" class="secondary" data-gps>◎ ${tr('useLocation')}</button>
+    <button class="primary" type="submit">⌕ ${tr('findResources')}</button>
   </form>`;
 }
 
-function selfCategoryButtons() {
-  return `<div class="category-grid urgent-categories">
-    ${SELF_CATEGORIES.map(item => `<button class="category" data-category="${item.id}">
-      <span aria-hidden="true">${item.icon}</span><strong>${esc(item[state.lang] || item.en)}</strong>
-    </button>`).join('')}
-  </div>`;
+function helperField(name, labelKey, type = 'text', options = []) {
+  const value = state.helperIntake[name] ?? '';
+  if (type === 'select') {
+    return `<label><span>${tr(labelKey)} <small>${tr('optional')}</small></span>
+      <select name="${name}" data-intake>
+        <option value="">${tr('chooseAnswer')}</option>
+        ${options.map(option => `<option value="${option.value}" ${value === option.value ? 'selected' : ''}>${tr(option.key)}</option>`).join('')}
+      </select>
+    </label>`;
+  }
+  return `<label><span>${tr(labelKey)} <small>${tr('optional')}</small></span><input name="${name}" value="${attr(value)}" data-intake></label>`;
 }
 
 function helperIntake() {
-  const f = (name, label, type = 'text', options = []) => {
-    const value = state.helperIntake[name] ?? '';
-    if (type === 'select') {
-      return `<label><span>${label} <small>Optional</small></span><select name="${name}" data-intake>
-        <option value="">Choose only if relevant</option>
-        ${options.map(option => `<option value="${attr(option)}" ${value === option ? 'selected' : ''}>${esc(option)}</option>`).join('')}
-      </select></label>`;
-    }
-    return `<label><span>${label} <small>Optional</small></span><input name="${name}" value="${attr(value)}" data-intake></label>`;
-  };
-  const restrictions = ['familyRestrictions', 'petRestrictions', 'genderRestrictions', 'ageRestrictions', 'sobrietyRestrictions'];
+  const yesNo = [{ value: 'yes', key: 'yes' }, { value: 'no', key: 'no' }, { value: 'unsure', key: 'unsure' }];
   return `<section class="intake-card" aria-labelledby="intake-title">
     <div class="section-head">
-      <div><span class="step-label">Guided intake · optional until search</span><h2 id="intake-title">What should the plan account for?</h2></div>
-      <button class="text-btn" data-clear-intake>Clear intake</button>
+      <div><span class="step-label">${tr('helperIntakeStep')}</span><h2 id="intake-title">${tr('helperIntakeTitle')}</h2></div>
+      <button class="text-btn" data-clear-intake>${tr('clearIntake')}</button>
     </div>
-    <p class="privacy-notice">Only enter information you have permission to use. Notes stay on this device.</p>
-    <p class="helper-explanation">These questions help filter practical restrictions. Do not enter names, Social Security numbers, medical or immigration document numbers, banking information, passwords, or photos of identification.</p>
+    <p class="privacy-notice">${tr('privacyNotice')}</p>
+    <p class="helper-explanation">${tr('sensitiveWarning')}</p>
     <div class="intake-grid">
-      ${f('immediateNeed', 'Immediate need')}
-      ${f('location', 'City or ZIP code')}
-      ${f('safetyTonight', 'Safety tonight', 'select', ['Safe tonight', 'Not safe tonight', 'Unsure'])}
-      ${f('ageGroup', 'Age group', 'select', ['Child', 'Teen', 'Adult', 'Older adult'])}
-      ${f('childrenInvolved', 'Children involved', 'select', ['Yes', 'No', 'Unsure'])}
-      ${f('veteranStatus', 'Veteran status', 'select', ['Yes', 'No', 'Prefer not to say'])}
-      ${f('identification', 'Identification available', 'select', ['Yes', 'No', 'Some documents'])}
-      ${f('transportation', 'Transportation available', 'select', ['Walking only', 'Transit', 'Car', 'Needs a ride'])}
-      ${f('phoneAccess', 'Phone access', 'select', ['Reliable', 'Limited', 'No phone'])}
-      ${f('accessibility', 'Accessibility needs')}
-      ${f('preferredLanguage', 'Preferred language')}
-      ${restrictions.map(name => f(name, name.replace(/([A-Z])/g, ' $1').replace(/^./, c => c.toUpperCase()))).join('')}
+      ${helperField('immediateNeed', 'immediateNeed')}
+      ${helperField('location', 'location')}
+      ${helperField('safetyTonight', 'safetyTonight', 'select', [
+        { value: 'safe', key: 'safe' },
+        { value: 'notSafe', key: 'notSafe' },
+        { value: 'unsure', key: 'unsure' }
+      ])}
+      ${helperField('ageGroup', 'ageGroup')}
+      ${helperField('childrenInvolved', 'children', 'select', yesNo)}
+      ${helperField('veteranStatus', 'veteranStatus', 'select', [
+        { value: 'yes', key: 'yes' },
+        { value: 'no', key: 'no' },
+        { value: 'preferNot', key: 'preferNot' }
+      ])}
+      ${helperField('identification', 'identification', 'select', [
+        { value: 'yes', key: 'yes' },
+        { value: 'no', key: 'no' },
+        { value: 'some', key: 'someDocuments' }
+      ])}
+      ${helperField('transportation', 'transportation', 'select', [
+        { value: 'walking', key: 'walkingOnly' },
+        { value: 'transit', key: 'transit' },
+        { value: 'car', key: 'car' },
+        { value: 'ride', key: 'needsRide' }
+      ])}
+      ${helperField('phoneAccess', 'phoneAccess', 'select', [
+        { value: 'reliable', key: 'reliable' },
+        { value: 'limited', key: 'limited' },
+        { value: 'none', key: 'noPhone' }
+      ])}
+      ${helperField('accessibility', 'accessibilityNeeds')}
+      ${helperField('preferredLanguage', 'preferredLanguage')}
+      ${helperField('familyRestrictions', 'familyRestrictions')}
+      ${helperField('petRestrictions', 'petRestrictions')}
+      ${helperField('genderRestrictions', 'genderRestrictions')}
+      ${helperField('ageRestrictions', 'ageRestrictions')}
+      ${helperField('sobrietyRestrictions', 'sobrietyRestrictions')}
     </div>
-    <label class="notes-field"><span>Additional notes <small>Optional — stored on this device</small></span>
+    <label class="notes-field"><span>${tr('additionalNotes')} <small>${tr('localDeviceNote')}</small></span>
       <textarea name="notes" data-intake rows="3">${esc(state.helperIntake.notes || '')}</textarea>
     </label>
-    ${state.helperIntake.safetyTonight === 'Not safe tonight' ? `<div class="danger-notice"><strong>If there is immediate danger, call 911. For crisis support, call or text 988.</strong></div>` : ''}
-    <button class="primary" data-helper-search>Build resource options</button>
+    ${state.helperIntake.safetyTonight === 'notSafe' ? `<div class="danger-notice">${tr('safetySupportNote')}</div>` : ''}
+    <button class="primary" data-helper-search>${tr('buildOptions')}</button>
   </section>`;
 }
 
@@ -430,126 +467,140 @@ function homePage() {
   return `<main id="main">
     <section class="hero ${helper ? 'helper-hero' : ''}">
       <div class="wrap">
-        <span class="eyebrow">${helper ? 'Helper workspace' : 'Help near you'}</span>
-        <h1>${helper ? t('helperHero') : t('selfHero')}</h1>
-        <p>${helper ? t('helperSub') : t('selfSub')}</p>
+        <span class="eyebrow">${helper ? tr('helperEyebrow') : tr('selfEyebrow')}</span>
+        <h1>${helper ? tr('helperHero') : tr('selfHero')}</h1>
+        <p>${helper ? tr('helperSub') : tr('selfSub')}</p>
         ${helper ? '' : searchBox()}
-        ${emergencyLinks()}
+        ${communityLink()}
       </div>
     </section>
     ${statusMessages()}
-    ${helper ? `<div class="wrap section helper-layout"><div>${helperIntake()}</div>${planPanel(true)}</div>` : `
-      <section class="wrap section" aria-labelledby="need-categories">
-        <div class="section-head"><h2 id="need-categories">Choose what you need</h2></div>
-        ${selfCategoryButtons()}
-      </section>`}
-    <section class="wrap section">
-      <div class="section-head"><div><span class="step-label">Verified starting points</span><h2>Trusted national resources</h2></div><button class="text-btn" data-page="find">See all</button></div>
-      <div class="resource-list">${staticMatches().slice(0, helper ? 3 : 4).map(resourceCard).join('')}</div>
-    </section>
+    ${helper
+      ? `<div class="wrap section helper-layout"><div>${helperIntake()}</div>${planPanel()}</div>`
+      : `<section class="wrap section home-empty"><p>${tr('noHomeResources')}</p></section>`}
   </main>`;
 }
 
 function filtersPanel() {
-  const check = (name, label) => `<label class="filter-check"><input type="checkbox" data-filter="${name}" ${state.filters[name] ? 'checked' : ''}><span>${label}</span></label>`;
+  const checkbox = (name, key) => `<label class="filter-check"><input type="checkbox" data-filter="${name}" ${state.filters[name] ? 'checked' : ''}><span>${tr(key)}</span></label>`;
   return `<details class="filters-panel">
-    <summary>Filter these results</summary>
+    <summary>${tr('filters')}</summary>
     <div class="filter-grid">
-      ${check('openNow', 'Open now')}
-      ${check('availableToday', 'Available today')}
-      ${check('walkIn', 'Walk-ins accepted')}
-      ${check('noId', 'No identification required')}
-      ${check('noRegistration', 'No registration required')}
-      ${check('accessible', 'Wheelchair accessible')}
-      <label><span>Language offered</span><input data-filter-text="language" value="${attr(state.filters.language)}" placeholder="Example: Spanish"></label>
-      <label><span>Minimum confidence</span><select data-filter-text="confidence">
-        <option value="">Any confidence</option>
-        <option value="0.5" ${state.filters.confidence === '0.5' ? 'selected' : ''}>50%+</option>
-        <option value="0.75" ${state.filters.confidence === '0.75' ? 'selected' : ''}>75%+</option>
-      </select></label>
-      <button class="ghost" data-clear-filters>Clear filters</button>
+      ${checkbox('openNow', 'filterOpenNow')}
+      ${checkbox('availableToday', 'filterAvailableToday')}
+      ${checkbox('walkIn', 'filterWalkIn')}
+      ${checkbox('noId', 'filterNoId')}
+      ${checkbox('noRegistration', 'filterNoRegistration')}
+      ${checkbox('accessible', 'filterAccessible')}
+      <label><span>${tr('filterLanguage')}</span><input data-filter-text="language" value="${attr(state.filters.language)}" placeholder="${attr(tr('filterLanguagePlaceholder'))}"></label>
+      <button class="ghost" data-clear-filters>${tr('clearFilters')}</button>
     </div>
   </details>`;
 }
 
-function availabilityBadge(resource) {
-  const label = resource.availabilityStatus || t('uncertain');
-  const className = /open now|available today/i.test(label) ? 'confirmed' : /uncertain|needs confirmation/i.test(label) ? 'uncertain' : '';
-  return `<span class="verification-badge ${className}"><span aria-hidden="true">${className === 'confirmed' ? '✓' : '!'}</span>${esc(label)}</span>`;
+function scheduleDisplay(resource) {
+  if (resource.hours) {
+    return {
+      label: resource.scheduleLabel === 'published' ? tr('schedulePublished') : tr('typicalHours'),
+      value: resource.hours
+    };
+  }
+  return {
+    label: resource.scheduleVerificationStatus === 'researching' ? tr('scheduleResearching') : tr('scheduleUncertain'),
+    value: tr('availabilityConfirm')
+  };
 }
 
-function metadata(resource) {
-  const entries = [
-    ['Distance', resource.distance !== null ? `${resource.distance.toFixed(1)} miles` : ''],
-    ['Next available', resource.nextEvent],
-    ['Walk-in / appointment', resource.walkInStatus || resource.appointmentRequirement],
-    ['Eligibility', resource.eligibilitySummary],
-    ['Documents', resource.requiredDocuments.join(', ')],
-    ['Registration', resource.registrationRequirement],
-    ['Accessibility', resource.accessibility.join(', ')],
-    ['Languages', resource.languages.join(', ')],
-    ['Transportation', resource.transportation.join(', ')]
-  ].filter(([, value]) => value);
-  if (!entries.length) return '';
-  return `<dl class="resource-meta">${entries.map(([label, value]) => `<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join('')}</dl>`;
+function availabilityText(resource) {
+  const value = String(resource.availabilityStatus || '').toLowerCase();
+  if (value === 'open now') return tr('openNow');
+  if (value === 'closed') return tr('closed');
+  if (value === 'opening soon') return tr('openingSoon');
+  if (value === 'available today') return tr('availableToday');
+  if (value === 'upcoming event') return tr('upcomingEvent');
+  return tr('availabilityConfirm');
 }
 
-function sourceDetails(resource) {
-  const sourceLinks = resource.sourceUrls
-    .map(url => safeUrl(url))
+function verificationText(resource) {
+  if (/openstreetmap|community-sourced/i.test(`${resource.source} ${resource.verificationStatus}`)) return tr('communitySourced');
+  if (resource.lastVerified) return tr('verifiedPreviously');
+  return tr('needsVerification');
+}
+
+function directionsUrl(resource, mode = state.travelMode) {
+  const destination = resource.latitude !== null
+    ? `${resource.latitude},${resource.longitude}`
+    : resource.address || `${resource.name} ${state.location}`;
+  return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(destination)}&travelmode=${encodeURIComponent(mode)}`;
+}
+
+function walkingDetails(resource) {
+  if (resource.distance === null) return '';
+  const minutes = Math.max(1, Math.round(resource.distance / 3 * 60));
+  return tr('walkingEstimate', {
+    distance: distanceDisplay(resource.distance),
+    minutes
+  });
+}
+
+function sourceBlock(resource) {
+  const links = resource.sourceUrls
+    .map(safeUrl)
     .filter(Boolean)
-    .map((url, index) => `<a href="${attr(url)}" target="_blank" rel="noopener noreferrer">Source ${index + 1}</a>`)
+    .map((url, index) => `<a href="${attr(url)}" target="_blank" rel="noopener noreferrer">${tr('sourceNumber', { number: index + 1 })}</a>`)
     .join(' · ');
   return `<div class="source-details">
-    <span><strong>${t('source')}:</strong> ${esc(resource.source)}</span>
-    ${resource.lastVerified ? `<span><strong>${t('checked')}:</strong> ${esc(resource.lastVerified)}</span>` : ''}
-    ${resource.confidence !== null ? `<span><strong>Confidence:</strong> ${Math.round(resource.confidence * 100)}% (not a guarantee)</span>` : ''}
-    ${sourceLinks ? `<span>${sourceLinks}</span>` : ''}
-    ${resource.conflicts.length ? `<span class="conflict"><strong>Conflicting information:</strong> ${esc(resource.conflicts.join(' · '))}</span>` : ''}
+    <span><strong>${tr('sources')}:</strong> ${esc(resource.source)}</span>
+    ${resource.lastVerified ? `<span><strong>${tr('lastVerified')}:</strong> ${esc(resource.lastVerified)}</span>` : ''}
+    <span><strong>${tr('verification')}:</strong> ${verificationText(resource)}</span>
+    ${links ? `<span>${links}</span>` : ''}
+    ${resource.conflicts.length ? `<span class="conflict"><strong>${tr('conflictingInfo')}:</strong> ${esc(resource.conflicts.join(' · '))}</span>` : ''}
   </div>`;
 }
 
-function resourceCard(raw) {
+function resourceCard(raw, options = {}) {
   const resource = normalizeResource(raw, state.lang);
+  const schedule = scheduleDisplay(resource);
+  const localProgram = localProgramForResource(resource, state.location);
   const inPlan = state.helperPlan.some(item => item.id === resource.id);
   const compared = state.compareIds.has(resource.id);
   const site = safeUrl(resource.officialWebsite || resource.website);
-  const directions = resource.latitude !== null
-    ? `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(`${resource.latitude},${resource.longitude}`)}`
-    : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${resource.name} ${resource.address || state.location}`)}`;
+  const application = safeUrl(resource.registrationUrl);
+  const address = resource.address || tr('addressUnavailable');
   return `<article class="resource-card" data-resource-card="${attr(resource.id)}">
     <div class="card-top">
-      <span class="tag">${esc(category(resource.category).icon)} ${esc(tx(category(resource.category).label))}</span>
-      ${availabilityBadge(resource)}
+      <span class="tag">${categoryIcon(resource.category)} ${categoryLabel(resource.category)}</span>
+      <span class="verification-badge ${resource.hours ? 'confirmed' : 'uncertain'}"><span aria-hidden="true">${resource.hours ? '✓' : '!'}</span>${schedule.label}</span>
     </div>
-    <div>
-      <h3>${esc(resource.name)}</h3>
-      ${resource.programName ? `<p class="program-name">${esc(resource.programName)}</p>` : ''}
-    </div>
+    <div><h3>${esc(resource.name)}</h3>${resource.programName ? `<p class="program-name">${esc(resource.programName)}</p>` : ''}</div>
     ${resource.description ? `<p class="description">${esc(resource.description)}</p>` : ''}
-    ${metadata(resource)}
-    <details class="fact-details">
-      <summary>Facts, uncertainty, and sources</summary>
-      ${sourceDetails(resource)}
-      ${resource.verificationStatus ? `<p><strong>Verification:</strong> ${esc(resource.verificationStatus)}</p>` : ''}
-      <p class="ai-label"><strong>BridgeAid summary:</strong> ${esc(resource.eligibilitySummary || 'Eligibility details are not published in a structured form.')} Confirm with the organization.</p>
+    <dl class="resource-meta">
+      <dt>${tr('address')}</dt><dd>${esc(address)}</dd>
+      ${walkingDetails(resource) ? `<dt>${tr('distance')}</dt><dd>${esc(walkingDetails(resource))}</dd>` : ''}
+      <dt>${tr('hours')}</dt><dd><strong>${schedule.label}:</strong> ${esc(schedule.value)}</dd>
+      <dt>${tr('availability')}</dt><dd>${availabilityText(resource)}</dd>
+      <dt>${tr('eligibilitySummary')}</dt><dd>${esc(localProgram?.localEligibilityVerified ? localProgram.eligibilitySummary : tr('eligibilityLocalUnknown'))}</dd>
+      <dt>${tr('registrationRequirement')}</dt><dd>${esc(resource.registrationRequirement || tr('registrationUseContact'))}</dd>
+    </dl>
+    <details class="fact-details"><summary>${tr('sources')}</summary>
+      ${sourceBlock(resource)}
+      <p class="ai-label"><strong>${tr('aiSummary')}:</strong> ${esc(resource.description || tr('unknown'))} ${tr('confirmOrganization')}</p>
     </details>
     <div class="card-actions action-priority">
-      ${resource.phone ? `<a class="primary" href="tel:${attr(phoneHref(resource.phone))}">☎ ${t('call')}</a>` : ''}
-      <a class="secondary" href="${attr(directions)}" target="_blank" rel="noopener noreferrer">⌖ ${t('directions')}</a>
-      ${site ? `<a class="ghost" href="${attr(site)}" target="_blank" rel="noopener noreferrer">${t('official')} ↗</a>` : ''}
+      ${resource.phone ? `<a class="primary" href="tel:${attr(phoneHref(resource.phone))}">☎ ${tr('call')}</a>` : ''}
+      <a class="secondary" href="${attr(directionsUrl(resource, 'walking'))}" target="_blank" rel="noopener noreferrer">⌖ ${tr('walkingDirections')}</a>
+      ${state.travelMode !== 'walking' ? `<a class="ghost" href="${attr(directionsUrl(resource))}" target="_blank" rel="noopener noreferrer">${state.travelMode === 'transit' ? tr('transitDirections') : tr('drivingDirections')}</a>` : ''}
+      ${application ? `<a class="ghost" href="${attr(application)}" target="_blank" rel="noopener noreferrer">${tr('officialApplication')} ↗</a>` : site ? `<a class="ghost" href="${attr(site)}" target="_blank" rel="noopener noreferrer">${tr('officialWebsite')} ↗</a>` : ''}
     </div>
     <div class="card-actions card-tools">
-      <button class="text-action" data-resource-action="requirements" data-id="${attr(resource.id)}">${t('requirements')}</button>
-      <button class="text-action" data-resource-action="eligibility" data-id="${attr(resource.id)}">${t('eligibility')}</button>
-      <button class="text-action" data-resource-action="registration" data-id="${attr(resource.id)}">${t('register')}</button>
-      ${state.mode === 'helper' ? `
-        <button class="text-action" data-add-plan="${attr(resource.id)}" aria-pressed="${inPlan}">${inPlan ? `✓ ${t('selected')}` : `+ ${t('select')}`}</button>
-        <button class="text-action" data-compare="${attr(resource.id)}" aria-pressed="${compared}">${compared ? '✓ ' : ''}${t('compare')}</button>
-        <button class="text-action" data-confirm-reminder="${attr(resource.id)}">${t('confirm')}</button>
-      ` : ''}
-      <button class="text-action" data-report="${attr(resource.id)}">${t('report')}</button>
-      <button class="text-action" data-save="${attr(resource.id)}" aria-pressed="${state.saved.has(resource.id)}">${state.saved.has(resource.id) ? '★ Saved' : '☆ Save'}</button>
+      <button class="text-action" data-requirements="${attr(resource.id)}">${tr('viewRequirements')}</button>
+      <button class="text-action" data-eligibility="${attr(resource.id)}">${tr('checkEligibility')}</button>
+      <button class="text-action" data-registration="${attr(resource.id)}">${tr('registrationHelp')}</button>
+      <button class="text-action" data-report="${attr(resource.id)}">${tr('reportIncorrect')}</button>
+      <button class="text-action" data-save="${attr(resource.id)}" aria-pressed="${state.saved.has(resource.id)}">${state.saved.has(resource.id) ? `★ ${tr('savedAction')}` : `☆ ${tr('save')}`}</button>
+      ${state.mode === 'helper' && !options.compact ? `
+        <button class="text-action" data-add-plan="${attr(resource.id)}" aria-pressed="${inPlan}">${inPlan ? `✓ ${tr('inPlan')}` : `+ ${tr('selectPlan')}`}</button>
+        <button class="text-action" data-compare="${attr(resource.id)}" aria-pressed="${compared}">${compared ? '✓ ' : ''}${tr('compare')}</button>` : ''}
     </div>
   </article>`;
 }
@@ -557,263 +608,576 @@ function resourceCard(raw) {
 function comparisonPanel(resources) {
   const selected = resources.filter(resource => state.compareIds.has(resource.id)).slice(0, 3);
   if (state.mode !== 'helper' || !selected.length) return '';
-  return `<section class="comparison-panel" aria-labelledby="compare-title">
-    <div class="section-head"><h2 id="compare-title">Compare resources</h2><button class="text-btn" data-clear-compare>Clear comparison</button></div>
+  return `<section class="comparison-panel" aria-labelledby="comparison-title">
+    <div class="section-head"><h2 id="comparison-title">${tr('comparison')}</h2><button class="text-btn" data-clear-compare>${tr('clearComparison')}</button></div>
     <div class="comparison-scroll"><table>
-      <thead><tr><th>Resource</th><th>Availability</th><th>Eligibility</th><th>Distance</th><th>Source</th></tr></thead>
-      <tbody>${selected.map(r => `<tr><th>${esc(r.name)}</th><td>${esc(r.availabilityStatus)}</td><td>${esc(r.eligibilitySummary || 'Confirm')}</td><td>${r.distance !== null ? `${r.distance.toFixed(1)} mi` : 'Not available'}</td><td>${esc(r.source)}</td></tr>`).join('')}</tbody>
+      <thead><tr><th>${tr('compareResource')}</th><th>${tr('hours')}</th><th>${tr('compareEligibility')}</th><th>${tr('distance')}</th><th>${tr('compareSource')}</th></tr></thead>
+      <tbody>${selected.map(resource => `<tr>
+        <th>${esc(resource.name)}</th>
+        <td>${esc(resource.hours || tr('scheduleUncertain'))}</td>
+        <td>${esc(localProgramForResource(resource, state.location)?.localEligibilityVerified ? resource.eligibilitySummary : tr('eligibilityLocalUnknown'))}</td>
+        <td>${esc(walkingDetails(resource) || tr('unknown'))}</td>
+        <td>${esc(resource.source)}</td>
+      </tr>`).join('')}</tbody>
     </table></div>
   </section>`;
 }
 
-function resultsPage() {
+function findPage() {
   const resources = allResults();
-  const helper = state.mode === 'helper';
   return `<main id="main" class="wrap section page">
     <div class="page-head">
-      <div><span class="eyebrow">${helper ? 'Helper workspace' : 'Help near you'}</span><h1>${t('results')}</h1>
-      <p>${state.query ? `“${esc(state.query)}”` : 'All trusted resources'}${state.location ? ` near ${esc(state.location)}` : ''}</p></div>
-      ${emergencyLinks()}
+      <div><span class="eyebrow">${tr('selfEyebrow')}</span><h1>${tr('searchResults')}</h1>
+        ${state.searched ? `<p>${tr('resultsFor', { need: searchNeed(), location: state.location })}</p>` : `<p>${tr('noHomeResources')}</p>`}
+      </div>${communityLink()}
     </div>
     ${statusMessages()}
     ${searchBox(true)}
-    ${filtersPanel()}
-    ${state.loading ? `<div class="loading-state" role="status"><span class="spinner" aria-hidden="true"></span><strong>Checking saved and live resources…</strong></div>` : ''}
+    ${state.searched ? filtersPanel() : ''}
+    ${state.loading ? `<div class="loading-state" role="status"><span class="spinner" aria-hidden="true"></span><strong>${tr('loading')}</strong></div>` : ''}
     ${comparisonPanel(resources)}
-    <div class="${helper ? 'results-layout' : ''}">
+    <div class="${state.mode === 'helper' && state.searched ? 'results-layout' : ''}">
       <section aria-labelledby="resource-list-title">
-        <div class="section-head"><h2 id="resource-list-title">${resources.length} resource${resources.length === 1 ? '' : 's'}</h2><small>Every result includes a traceable source.</small></div>
-        <div class="resource-list">${resources.length ? resources.map(resourceCard).join('') : `<div class="empty-state">${t('noResults')}</div>`}</div>
+        ${state.searched ? `<div class="section-head"><h2 id="resource-list-title">${tr('resultsCount', { count: resources.length })}</h2><small>${tr('everyResultSourced')}</small></div>
+          <div class="resource-list">${resources.length ? resources.map(resource => resourceCard(resource)).join('') : `<div class="empty-state">${tr('noResults')}</div>`}</div>`
+          : `<div class="empty-state">${tr('noHomeResources')}</div>`}
       </section>
-      ${helper ? planPanel(false) : ''}
+      ${state.mode === 'helper' && state.searched ? planPanel() : ''}
     </div>
   </main>`;
 }
 
 function planText() {
   const created = state.helperPlan[0]?.planCreated || new Date().toISOString();
-  const lines = [
-    'BridgeAid resource plan',
-    `Created: ${new Date(created).toLocaleString()}`,
-    `Updated: ${new Date().toLocaleString()}`,
-    `Need: ${state.helperIntake.immediateNeed || state.query || 'Not entered'}`,
-    `Location: ${state.helperIntake.location || state.location || 'Not entered'}`,
+  return [
+    `BridgeAid — ${tr('resourcePlan')}`,
+    `${tr('created')}: ${new Date(created).toLocaleString(state.lang)}`,
+    `${tr('updated')}: ${new Date().toLocaleString(state.lang)}`,
+    `${tr('need')}: ${state.helperIntake.immediateNeed || searchNeed() || tr('notEntered')}`,
+    `${tr('location')}: ${state.helperIntake.location || state.location || tr('notEntered')}`,
     '',
     ...state.helperPlan.flatMap((item, index) => [
       `${index + 1}. ${item.name}`,
-      item.phone ? `Phone: ${item.phone}` : '',
-      item.website ? `Official link: ${item.website}` : '',
-      item.directions ? `Directions: ${item.directions}` : '',
-      `Status: ${item.status || 'Not contacted'}`,
-      item.eligibilitySummary ? `Eligibility: ${item.eligibilitySummary}` : '',
-      item.registrationRequirement ? `Registration: ${item.registrationRequirement}` : '',
-      item.requiredDocuments?.length ? `Documents: ${item.requiredDocuments.join(', ')}` : '',
-      item.note ? `Note: ${item.note}` : '',
-      'Next step: Confirm eligibility and availability with the organization.',
+      item.phone ? `${tr('call')}: ${item.phone}` : '',
+      item.website ? `${tr('officialWebsite')}: ${item.website}` : '',
+      item.directions ? `${tr('walkingDirections')}: ${item.directions}` : '',
+      `${tr('status')}: ${tr(STATUS_KEYS[statusCode(item.status)] || 'statusNotContacted')}`,
+      item.note ? `${tr('localNote')}: ${item.note}` : '',
+      tr('confirmOrganization'),
       ''
     ].filter(Boolean))
-  ];
-  return lines.join('\n');
+  ].join('\n');
 }
 
-function planPanel(home = false) {
+function statusCode(value) {
+  return Object.entries(STATUS_STORAGE).find(([, stored]) => stored === value)?.[0] || 'notContacted';
+}
+
+function planPanel() {
   const created = state.helperPlan[0]?.planCreated;
-  return `<aside class="plan-panel ${home ? 'home-plan' : ''}" aria-labelledby="plan-title">
-    <div class="section-head">
-      <div><span class="step-label">Local plan · ${state.helperPlan.length} selected</span><h2 id="plan-title">Resource plan</h2></div>
-    </div>
-    <p><strong>Need:</strong> ${esc(state.helperIntake.immediateNeed || state.query || 'Not entered')}</p>
-    <p><strong>Location:</strong> ${esc(state.helperIntake.location || state.location || 'Not entered')}</p>
-    ${created ? `<p class="plan-time">Created ${esc(new Date(created).toLocaleString())}<br>Updated ${esc(new Date().toLocaleString())}</p>` : ''}
-    <div class="plan-items">
-      ${state.helperPlan.length ? state.helperPlan.map(planItem).join('') : '<p class="empty-plan">Select resources to build a plan. Notes and status stay on this device.</p>'}
-    </div>
+  return `<aside class="plan-panel" aria-labelledby="plan-title">
+    <div class="section-head"><div><span class="step-label">${tr('planLocal', { count: state.helperPlan.length })}</span><h2 id="plan-title">${tr('resourcePlan')}</h2></div></div>
+    <p><strong>${tr('need')}:</strong> ${esc(state.helperIntake.immediateNeed || searchNeed() || tr('notEntered'))}</p>
+    <p><strong>${tr('location')}:</strong> ${esc(state.helperIntake.location || state.location || tr('notEntered'))}</p>
+    ${created ? `<p class="plan-time">${tr('created')} ${esc(new Date(created).toLocaleString(state.lang))}<br>${tr('updated')} ${esc(new Date().toLocaleString(state.lang))}</p>` : ''}
+    <div class="plan-items">${state.helperPlan.length ? state.helperPlan.map(planItem).join('') : `<p class="empty-plan">${tr('planEmpty')}</p>`}</div>
     <div class="plan-actions">
-      <button class="secondary" data-copy-plan ${state.helperPlan.length ? '' : 'disabled'}>Copy plain text</button>
-      <button class="ghost" data-print-plan ${state.helperPlan.length ? '' : 'disabled'}>Print</button>
-      <button class="danger-button" data-clear-plan ${state.helperPlan.length || Object.keys(state.helperIntake).length ? '' : 'disabled'}>Clear this plan</button>
+      <button class="secondary" data-copy-plan ${state.helperPlan.length ? '' : 'disabled'}>${tr('copyPlan')}</button>
+      <button class="ghost" data-print-plan ${state.helperPlan.length ? '' : 'disabled'}>${tr('print')}</button>
+      <button class="danger-button" data-clear-plan ${state.helperPlan.length || Object.keys(state.helperIntake).length ? '' : 'disabled'}>${tr('clearPlan')}</button>
     </div>
-    <p class="storage-note">Browser storage is not encrypted. Anyone with access to this device and browser profile may be able to read this plan.</p>
+    <p class="storage-note">${tr('planStorageWarning')}</p>
   </aside>`;
 }
 
 function planItem(item) {
+  const code = statusCode(item.status);
   return `<article class="plan-item">
     <div><h3>${esc(item.name)}</h3>${item.phone ? `<a href="tel:${attr(phoneHref(item.phone))}">${esc(item.phone)}</a>` : ''}</div>
-    <label>Status<select data-plan-status="${attr(item.id)}">
-      ${['Not contacted', 'Called', 'Confirmed', 'Unavailable'].map(status => `<option ${item.status === status ? 'selected' : ''}>${status}</option>`).join('')}
+    <label>${tr('status')}<select data-plan-status="${attr(item.id)}">
+      ${STATUS_CODES.map(option => `<option value="${option}" ${code === option ? 'selected' : ''}>${tr(STATUS_KEYS[option])}</option>`).join('')}
     </select></label>
-    <label>Local note<textarea rows="2" data-plan-note="${attr(item.id)}" placeholder="Short note — saved on this device">${esc(item.note || '')}</textarea></label>
-    <button class="text-action" data-remove-plan="${attr(item.id)}">Remove</button>
+    <label>${tr('localNote')}<textarea rows="2" data-plan-note="${attr(item.id)}" placeholder="${attr(tr('localNotePlaceholder'))}">${esc(item.note || '')}</textarea></label>
+    <button class="text-action" data-remove-plan="${attr(item.id)}">${tr('remove')}</button>
   </article>`;
 }
 
 function savedPage() {
-  const all = [...state.liveResults, ...sourceResources].map(r => normalizeResource(r, state.lang));
-  const saved = all.filter(r => state.saved.has(r.id));
-  return `<main id="main" class="wrap section page"><div class="page-head"><h1>Saved resources</h1>${emergencyLinks()}</div>
-    <div class="resource-list">${saved.length ? saved.map(resourceCard).join('') : '<div class="empty-state">No saved resources yet.</div>'}</div></main>`;
+  const available = mergeDuplicates([...state.liveResults, ...sourceResources]).map(resource => normalizeResource(resource, state.lang));
+  const saved = available.filter(resource => state.saved.has(resource.id));
+  return `<main id="main" class="wrap section page">
+    <div class="page-head"><h1>${tr('savedTitle')}</h1>${communityLink()}</div>
+    <div class="resource-list">${saved.length ? saved.map(resource => resourceCard(resource)).join('') : `<div class="empty-state">${tr('savedEmpty')}</div>`}</div>
+  </main>`;
 }
 
 function privacyPage() {
   return `<main id="main" class="wrap section page about">
-    <span class="eyebrow">Privacy and limits</span>
-    <h1>Your information stays under your control.</h1>
-    <p class="lead">BridgeAid stores the selected mode, general location, language, saved resources, cached searches, and helper plan in this browser. Helper notes are not encrypted. Exact GPS coordinates and eligibility answers are not saved.</p>
-    <div class="about-grid">
-      <article><h2>1</h2><h3>Location</h3><p>GPS is requested only after you choose it. Coordinates are used for the current search and are not written to storage.</p><button class="ghost" data-clear-location>Clear saved location</button></article>
-      <article><h2>2</h2><h3>Eligibility</h3><p>Answers are kept only in memory for this tab and can be cleared at any time.</p><button class="ghost" data-clear-eligibility>Clear eligibility answers</button></article>
-      <article><h2>3</h2><h3>Plans and searches</h3><p>Plans, notes, saved resources, and cached searches stay on this device.</p><button class="danger-button" data-clear-private>Clear local BridgeAid data</button></article>
+    <span class="eyebrow">${tr('privacyEyebrow')}</span>
+    <h1>${tr('privacyTitle')}</h1>
+    <p class="lead">${tr('privacyIntro')}</p>
+    <div class="privacy-grid">
+      <article><h2>${tr('privacyLocationTitle')}</h2><p>${tr('privacyLocationText')}</p><button class="ghost" data-clear-location>${tr('clearLocation')}</button></article>
+      <article><h2>${tr('privacyQuizTitle')}</h2><p>${tr('privacyQuizText')}</p><button class="ghost" data-clear-eligibility>${tr('clearEligibility')}</button></article>
+      <article><h2>${tr('privacySavedTitle')}</h2><p>${tr('privacySavedText')}</p><button class="danger-button" data-clear-private>${tr('clearLocalData')}</button></article>
+      <article><h2>${tr('privacyReportsTitle')}</h2><p>${tr('privacyReportsText')}</p><p><strong>${state.corrections.length}</strong> ${tr('reportQueued')}</p></article>
     </div>
-    <div class="notice"><strong>Always confirm.</strong> BridgeAid does not guarantee eligibility, appointments, capacity, funding, supplies, beds, or service availability.</div>
-    ${emergencyLinks()}
+    <div class="notice"><strong>${tr('availabilityConfirm')}.</strong> ${tr('privacyConfirm')}</div>
+    ${communityLink()}
   </main>`;
 }
 
-function sidePanel() {
-  if (!state.panel || !state.selectedResource) return '';
-  const resource = normalizeResource(state.selectedResource, state.lang);
-  const eligibility = summarizeEligibility(resource);
-  let body = '';
-  if (state.panel === 'requirements') {
-    body = `<h2 id="panel-title">Requirements</h2><p>${esc(eligibility.summary || 'Published requirements are incomplete.')}</p>
-      ${resource.requiredDocuments.length ? `<h3>Documents</h3><ul>${resource.requiredDocuments.map(d => `<li>${esc(d)}</li>`).join('')}</ul>` : ''}
-      <p><strong>Source:</strong> ${resource.sourceUrls[0] ? `<a href="${attr(safeUrl(resource.sourceUrls[0]))}" target="_blank" rel="noopener noreferrer">Review full source</a>` : 'No separate requirements page published'}</p>
-      <p>${eligibility.disclaimer}</p>`;
+function eligibilityFieldKey(field) {
+  return {
+    age: 'ageRange',
+    ageRange: 'ageRange',
+    householdSize: 'householdSize',
+    income: 'incomeRange',
+    housingStatus: 'housingStatus',
+    employmentStatus: 'employmentStatus',
+    studentStatus: 'studentStatus',
+    insuranceStatus: 'insuranceStatus',
+    disabilityStatus: 'disabilityStatus',
+    veteranStatus: 'veteranStatus',
+    dependents: 'dependents',
+    identification: 'identification',
+    programConsiderations: 'programConsiderations'
+  }[field] || 'programConsiderations';
+}
+
+function eligibilityMissingLabel(value) {
+  if (value === 'program') return tr('missingProgram');
+  if (value === 'location') return tr('missingLocation');
+  if (String(value).includes('eligibility rules') || String(value).includes('service area')) return tr('missingLocalRules');
+  return tr(eligibilityFieldKey(value));
+}
+
+function eligibilityField(question, answer) {
+  const field = question.field;
+  const labelKey = eligibilityFieldKey(field);
+  const options = {
+    age: [['17', 'under18'], ['21', 'age18to24'], ['40', 'age25to59'], ['65', 'age60plus']],
+    ageRange: [['17', 'under18'], ['21', 'age18to24'], ['40', 'age25to59'], ['65', 'age60plus']],
+    income: [['10000', 'incomeUnder20'], ['30000', 'income20to40'], ['60000', 'income40to75'], ['75000', 'income75plus'], ['', 'incomeUnknown']],
+    housingStatus: [['housed', 'housed'], ['temporary', 'temporaryHousing'], ['unhoused', 'unhoused']],
+    employmentStatus: [['employed', 'employed'], ['unemployed', 'unemployed'], ['notWorking', 'notWorking']],
+    studentStatus: [['student', 'student'], ['notStudent', 'notStudent']],
+    insuranceStatus: [['insured', 'insured'], ['uninsured', 'uninsured']],
+    disabilityStatus: [['yes', 'disabilityYes'], ['no', 'disabilityNo']],
+    veteranStatus: [['yes', 'yes'], ['no', 'no'], ['preferNot', 'preferNot']],
+    identification: [['yes', 'yes'], ['no', 'no'], ['some', 'someDocuments']]
+  }[field];
+  if (['householdSize', 'dependents'].includes(field)) {
+    return `<label><span>${tr(labelKey)}</span><input type="number" min="0" max="20" data-eligibility-field="${field}" value="${attr(answer || '')}"></label>`;
   }
-  if (state.panel === 'eligibility') {
-    const rules = resource.eligibilityRules;
-    const questions = questionsForRules(rules, state.eligibilityAnswers);
-    const result = evaluateEligibility(rules, state.eligibilityAnswers);
-    body = `<h2 id="panel-title">Preliminary eligibility check</h2>
-      <p>${esc(eligibility.summary || 'Published rules are incomplete.')}</p>
-      ${questions.slice(0, 3).map(q => `<label>${esc(q.question)}<input data-eligibility-answer="${attr(q.field)}"></label>`).join('')}
-      <div class="eligibility-result"><strong>${esc(result.status)}</strong><ul>${result.reasons.map(reason => `<li>${esc(reason)}</li>`).join('')}</ul>
-      ${result.missing.length ? `<p>Missing: ${esc(result.missing.join(', '))}</p>` : ''}</div>
-      <p>Only the organization can make a final decision.</p><button class="ghost" data-clear-eligibility>Clear answers</button>`;
+  if (!options) {
+    return `<label><span>${tr(labelKey)}</span><input data-eligibility-field="${field}" value="${attr(answer || '')}"></label>`;
   }
-  if (state.panel === 'registration') {
-    const guide = registrationSteps(resource);
-    body = `<h2 id="panel-title">Registration help</h2><ol>${guide.steps.map(step => `<li>${esc(step)}</li>`).join('')}</ol>
-      ${guide.formUrl ? `<a class="primary" href="${attr(guide.formUrl)}" target="_blank" rel="noopener noreferrer">Open verified official form</a>` : ''}
-      <p class="danger-notice">${esc(guide.warning)}</p>
-      <details><summary>Calling script</summary><p>“Hi, I’m calling about ${esc(resource.name)}. Could you confirm who qualifies, what documents are needed, and how to register?”</p></details>`;
+  return `<label><span>${tr(labelKey)}</span><select data-eligibility-field="${field}">
+    <option value="">${tr('chooseAnswer')}</option>
+    ${options.map(([value, key]) => `<option value="${value}" ${String(answer) === value ? 'selected' : ''}>${tr(key)}</option>`).join('')}
+  </select></label>`;
+}
+
+function eligibilityPage() {
+  const resources = state.searched
+    ? allResults()
+    : sourceResources.map(resource => normalizeResource(resource, state.lang));
+  const selected = resourceById(state.eligibility.resourceId);
+  const questions = selected
+    ? localEligibilityQuestions(selected, state.eligibility.location, state.eligibility.answers)
+    : [];
+  const result = state.eligibility.started && selected
+    ? evaluateLocalEligibility(selected, state.eligibility.location, state.eligibility.answers)
+    : null;
+  const currentQuestion = questions[state.eligibility.step];
+  const complete = state.eligibility.started && (!questions.length || state.eligibility.step >= questions.length);
+  return `<main id="main" class="wrap section page eligibility-page">
+    <span class="eyebrow">${tr('eligibilityEyebrow')}</span>
+    <h1>${tr('eligibilityTitle')}</h1>
+    <p class="lead">${tr('eligibilityIntro')}</p>
+    ${statusMessages()}
+    <section class="eligibility-workspace">
+      <div class="eligibility-setup">
+        <label><span>${tr('chooseProgram')}</span>
+          <select id="eligibilityResource">
+            <option value="">${tr('selectProgram')}</option>
+            ${resources.map(resource => `<option value="${attr(resource.id)}" ${state.eligibility.resourceId === resource.id ? 'selected' : ''}>${esc(resource.name)}</option>`).join('')}
+          </select>
+        </label>
+        <label><span>${tr('eligibilityLocation')}</span>
+          <input id="eligibilityLocation" value="${attr(state.eligibility.location)}" placeholder="${attr(tr('locationPlaceholder'))}">
+          <small>${tr('eligibilityLocationHelp')}</small>
+        </label>
+        ${!state.eligibility.started ? `<button class="primary" data-start-eligibility>${tr('startEligibility')}</button>` : ''}
+      </div>
+      ${state.eligibility.started && selected ? `<div class="eligibility-quiz">
+        <div class="eligibility-context">
+          <p><strong>${tr('localProgramUsed')}:</strong> ${esc(selected.name)}</p>
+          <p><strong>${tr('locationUsed')}:</strong> ${esc(state.eligibility.location)}</p>
+        </div>
+        ${!complete && currentQuestion ? `
+          <div class="progress-track" aria-label="${attr(tr('answerQuestion', { current: state.eligibility.step + 1, total: questions.length }))}">
+            <span style="width:${Math.round((state.eligibility.step + 1) / questions.length * 100)}%"></span>
+          </div>
+          <p class="step-label">${tr('answerQuestion', { current: state.eligibility.step + 1, total: questions.length })}</p>
+          ${eligibilityField(currentQuestion, state.eligibility.answers[currentQuestion.field])}
+          <button class="primary" data-next-eligibility>${state.eligibility.step + 1 === questions.length ? tr('seeResult') : tr('continue')}</button>
+        ` : eligibilityResult(result, selected)}
+      </div>` : ''}
+    </section>
+  </main>`;
+}
+
+function statusTranslation(status) {
+  return {
+    'Likely eligible': 'likelyEligible',
+    'Possibly eligible': 'possiblyEligible',
+    'Likely not eligible': 'likelyNotEligible',
+    'Unable to determine': 'unableDetermine'
+  }[status] || 'unableDetermine';
+}
+
+function eligibilityResult(result, resource) {
+  if (!result) return '';
+  const source = safeUrl(result.program?.eligibilitySourceUrl || resource.sourceUrls[0]);
+  return `<section class="eligibility-result" aria-live="polite">
+    <h2>${tr(statusTranslation(result.status))}</h2>
+    <p>${result.status === 'Unable to determine' ? tr('noLocalRules') : tr('nearbyRulesDiffer')}</p>
+    ${result.passed?.length ? `<h3>${tr('satisfied')}</h3><ul>${result.passed.map(item => `<li>${tr('requirementMet', { requirement: tr(eligibilityFieldKey(item.field)) })}</li>`).join('')}</ul>` : ''}
+    ${result.failed?.length ? `<h3>${tr('notSatisfied')}</h3><ul>${result.failed.map(item => `<li>${tr('requirementNotMet', { requirement: tr(eligibilityFieldKey(item.field)) })}</li>`).join('')}</ul>` : ''}
+    ${result.missing?.length ? `<h3>${tr('missingInfo')}</h3><ul>${result.missing.map(item => `<li>${esc(eligibilityMissingLabel(item))}</li>`).join('')}</ul>` : ''}
+    ${resource.eligibilityExceptions?.length ? `<h3>${tr('exceptions')}</h3><ul>${resource.eligibilityExceptions.map(item => `<li>${esc(item)}</li>`).join('')}</ul>` : ''}
+    ${resource.requiredDocuments?.length ? `<h3>${tr('documents')}</h3><ul>${resource.requiredDocuments.map(item => `<li>${esc(item)}</li>`).join('')}</ul>` : ''}
+    <h3>${tr('nextSteps')}</h3><p>${tr('confirmOrganization')}</p>
+    <p><strong>${tr('lastVerified')}:</strong> ${esc(result.program?.eligibilityLastVerified || tr('nonePublished'))}</p>
+    ${source ? `<a href="${attr(source)}" target="_blank" rel="noopener noreferrer">${tr('officialSource')} ↗</a>` : ''}
+    <p class="privacy-notice">${tr('preliminaryOnly')}</p>
+    <button class="ghost" data-clear-eligibility>${tr('restartQuiz')}</button>
+  </section>`;
+}
+
+function registrationPage() {
+  const resource = currentResource();
+  if (!resource) {
+    return `<main id="main" class="wrap section page"><h1>${tr('registrationTitle')}</h1><div class="empty-state">${tr('selectProgram')}</div></main>`;
   }
-  return `<div class="drawer-backdrop" data-close-panel><section class="side-panel" role="dialog" aria-modal="true" aria-labelledby="panel-title" data-panel-content>
-    <button class="drawer-close" data-close-panel aria-label="Close panel">×</button>${body}</section></div>`;
+  const guide = registrationGuidance(resource);
+  const steps = ['registrationStepDocuments', 'registrationStepApply', 'registrationStepConfirm'];
+  const step = Math.max(0, Math.min(2, state.registrationStep));
+  let content = '';
+  if (step === 0) {
+    content = resource.requiredDocuments.length
+      ? `<h2>${tr('documents')}</h2><ul>${resource.requiredDocuments.map(document => `<li>${esc(document)}</li>`).join('')}</ul>`
+      : `<h2>${tr('documents')}</h2><p>${tr('nonePublished')}. ${tr('confirmOrganization')}</p>`;
+  }
+  if (step === 1) {
+    content = `<h2>${tr('registrationStepApply')}</h2>
+      ${guide.notRequired ? `<p>${tr('registrationNotRequired')}</p>` : ''}
+      ${guide.applicationUrl ? `<p>${tr('registrationReview')}</p><a class="primary" href="${attr(guide.applicationUrl)}" target="_blank" rel="noopener noreferrer">${tr('openApplication')} ↗</a>` : `
+        <p>${guide.phoneOrInPerson ? tr('registrationPhoneOnly') : tr('registrationNoForm')}</p>
+        <p>${tr('registrationUseContact')}</p>
+        <div class="card-actions">${guide.phone ? `<a class="primary" href="tel:${attr(phoneHref(guide.phone))}">${tr('call')}</a>` : ''}${guide.officialWebsite ? `<a class="secondary" href="${attr(safeUrl(guide.officialWebsite))}" target="_blank" rel="noopener noreferrer">${tr('openOfficialSite')} ↗</a>` : ''}</div>`}
+      <details><summary>${tr('callingScript')}</summary><p>${tr('callingScriptText', { program: resource.name })}</p></details>`;
+  }
+  if (step === 2) {
+    content = `<h2>${tr('registrationStepConfirm')}</h2><p>${tr('registrationNeverSubmit')}</p><p>${tr('confirmOrganization')}</p>
+      <div class="registration-summary">
+        <p><strong>${tr('localProgramUsed')}:</strong> ${esc(resource.name)}</p>
+        <p><strong>${tr('locationUsed')}:</strong> ${esc(state.location || tr('notEntered'))}</p>
+        <p><strong>${tr('registrationRequirement')}:</strong> ${esc(resource.registrationRequirement || tr('registrationUseContact'))}</p>
+      </div>`;
+  }
+  return `<main id="main" class="wrap section page registration-page">
+    <span class="eyebrow">${tr('registrationProgress', { current: step + 1, total: 3 })}</span>
+    <h1>${tr('registrationTitle')}</h1>
+    <p class="lead">${esc(resource.name)}</p>
+    <div class="registration-progress">${steps.map((key, index) => `<span class="${index <= step ? 'active' : ''}">${index + 1}. ${tr(key)}</span>`).join('')}</div>
+    <section class="registration-card">${content}</section>
+    <div class="wizard-actions">
+      <button class="ghost" data-registration-prev ${step === 0 ? 'disabled' : ''}>${tr('previous')}</button>
+      <button class="primary" data-registration-next ${step === 2 ? 'disabled' : ''}>${tr('next')}</button>
+    </div>
+  </main>`;
+}
+
+function requirementsPanel() {
+  const resource = currentResource();
+  if (state.panel !== 'requirements' || !resource) return '';
+  const local = localProgramForResource(resource, state.location);
+  const source = safeUrl(local?.eligibilitySourceUrl || resource.sourceUrls[0]);
+  return drawer(`<h2 id="panel-title">${tr('requirementsTitle')}</h2>
+    <p><strong>${tr('localProgramUsed')}:</strong> ${esc(resource.name)}</p>
+    <p><strong>${tr('locationUsed')}:</strong> ${esc(state.location || tr('notEntered'))}</p>
+    <p>${esc(local?.localEligibilityVerified ? resource.eligibilitySummary : tr('noLocalRules'))}</p>
+    ${resource.requiredDocuments.length ? `<h3>${tr('documents')}</h3><ul>${resource.requiredDocuments.map(item => `<li>${esc(item)}</li>`).join('')}</ul>` : ''}
+    <p><strong>${tr('lastVerified')}:</strong> ${esc(local?.eligibilityLastVerified || tr('nonePublished'))}</p>
+    ${source ? `<a href="${attr(source)}" target="_blank" rel="noopener noreferrer">${tr('fullRequirements')} ↗</a>` : ''}
+    <p class="privacy-notice">${tr('preliminaryOnly')}</p>`);
+}
+
+function reportPanel() {
+  const resource = currentResource();
+  if (state.panel !== 'report' || !resource) return '';
+  const types = [
+    ['address', 'reportAddress'],
+    ['hours', 'reportHours'],
+    ['closed', 'reportClosed'],
+    ['service', 'reportService'],
+    ['eligibility', 'reportEligibility'],
+    ['registration', 'reportRegistration'],
+    ['duplicate', 'reportDuplicate'],
+    ['other', 'reportOther']
+  ];
+  return drawer(`<h2 id="panel-title">${tr('reportTitle')}</h2>
+    ${state.reportSubmitted ? `<div class="cache-state"><strong>${tr('reportSubmitted')}</strong><p>${tr('reportVerificationProcess')}</p></div>` : `
+      <p>${tr('reportIntro')}</p>
+      <form id="reportForm">
+        <input type="hidden" name="resourceId" value="${attr(resource.id)}">
+        <label><span>${tr('reportType')}</span><select name="type" required>
+          ${types.map(([value, key]) => `<option value="${value}">${tr(key)}</option>`).join('')}
+        </select></label>
+        <label><span>${tr('reportDetails')}</span><textarea name="details" rows="4" placeholder="${attr(tr('reportDetailsPlaceholder'))}"></textarea></label>
+        <button class="primary" type="submit">${tr('submitReport')}</button>
+      </form>`}`);
+}
+
+function drawer(content) {
+  return `<div class="drawer-backdrop"><section class="side-panel" role="dialog" aria-modal="true" aria-labelledby="panel-title">
+    <button class="drawer-close" data-close-panel aria-label="${attr(tr('close'))}">×</button>${content}
+  </section></div>`;
+}
+
+function chatRecommendation(resource, language) {
+  const normalized = normalizeResource(resource, language);
+  const website = safeUrl(normalized.registrationUrl || normalized.officialWebsite || normalized.website);
+  return `<article class="chat-resource">
+    <strong>${esc(normalized.name)}</strong>
+    <span>${esc(normalized.address || translate(language, 'addressUnavailable'))}</span>
+    <span>${translate(language, 'hours')}: ${esc(normalized.hours || translate(language, 'scheduleUncertain'))}</span>
+    ${website ? `<a href="${attr(website)}" target="_blank" rel="noopener noreferrer">${translate(language, normalized.registrationUrl ? 'officialApplication' : 'officialWebsite')} ↗</a>` : ''}
+  </article>`;
 }
 
 function chat() {
-  const opening = state.mode === 'helper' ? t('assistantHelper') : t('assistantSelf');
-  return `<button class="chat-launcher" data-chat aria-expanded="${state.chatOpen}">BridgeAI <span aria-hidden="true">${state.chatOpen ? '×' : '✦'}</span></button>
-    ${state.chatOpen ? `<section class="chat-panel" aria-label="BridgeAI assistant">
-      <div class="chat-head"><strong>BridgeAI</strong><small>One assistant · verified sources only</small></div>
-      <div class="chat-messages" aria-live="polite"><p class="assistant-message">${esc(opening)}</p>
-        ${state.chatMessages.map(message => `<p class="${message.role}-message">${esc(message.text)}</p>`).join('')}
+  const opening = state.mode === 'helper' ? tr('assistantHelperOpening') : tr('assistantSelfOpening');
+  return `<button class="chat-launcher" data-chat aria-expanded="${state.chatOpen}">${tr('assistantName')} <span aria-hidden="true">${state.chatOpen ? '×' : '✦'}</span></button>
+    ${state.chatOpen ? `<section class="chat-panel" aria-label="${attr(tr('assistantName'))}">
+      <div class="chat-head"><strong>${tr('assistantName')}</strong><small>${tr('assistantSubtitle')}</small></div>
+      <div class="chat-messages" aria-live="polite">
+        <p class="assistant-message">${opening}</p>
+        ${state.chatMessages.map(message => `<div class="${message.role}-message" lang="${message.language || state.lang}">
+          <p>${esc(message.text)}</p>
+          ${message.recommendations?.map(resource => chatRecommendation(resource, message.language || state.lang)).join('') || ''}
+        </div>`).join('')}
       </div>
-      <form id="chatForm"><label class="sr-only" for="chatInput">Message BridgeAI</label><input id="chatInput" placeholder="${attr(opening)}"><button class="primary">Send</button></form>
+      <form id="chatForm"><label class="sr-only" for="chatInput">${tr('assistantName')}</label>
+        <input id="chatInput" placeholder="${attr(tr('chatPlaceholder'))}">
+        <button class="primary">${tr('send')}</button>
+      </form>
     </section>` : ''}`;
 }
 
 function footer() {
-  return `<footer><div class="wrap"><strong>BridgeAid</strong><br><small>Confirm availability and eligibility directly with organizations. Local browser storage is not encrypted.</small></div></footer>`;
+  return `<footer><div class="wrap"><strong>BridgeAid</strong><br><small>${tr('footerNotice')}</small></div></footer>`;
 }
 
-function render({ focus = '' } = {}) {
+function render(options = {}) {
   document.documentElement.lang = state.lang === 'zh' ? 'zh-Hans' : state.lang;
-  const page = state.page === 'home' ? homePage() : state.page === 'find' ? resultsPage() : state.page === 'saved' ? savedPage() : privacyPage();
-  app.innerHTML = `${header()}${page}${footer()}${chat()}${sidePanel()}${modeSelector()}`;
-  if (focus) requestAnimationFrame(() => document.querySelector(focus)?.focus());
+  document.title = tr('appTitle');
+  const page = {
+    home: homePage,
+    find: findPage,
+    eligibility: eligibilityPage,
+    registration: registrationPage,
+    saved: savedPage,
+    privacy: privacyPage
+  }[state.page]?.() || homePage();
+  app.innerHTML = `${header()}${page}${footer()}${chat()}${requirementsPanel()}${reportPanel()}${modeSelector()}`;
+  if (options.focus) requestAnimationFrame(() => document.querySelector(options.focus)?.focus());
 }
 
-function resourceById(id) {
-  return [...state.liveResults, ...sourceResources].map(r => normalizeResource(r, state.lang)).find(r => r.id === id);
+async function researchMissingSchedules(resources) {
+  if (state.offline) return resources;
+  const pending = resources.map(resource => (
+    !resource.hours && resource.sourceUrls?.length
+      ? { ...resource, scheduleVerificationStatus: 'researching' }
+      : resource
+  ));
+  const candidates = pending.filter(resource => resource.scheduleVerificationStatus === 'researching').slice(0, 5);
+  if (!candidates.length) return pending;
+  const fetchWithTimeout = (url, options) => fetch(url, { ...options, signal: AbortSignal.timeout(3500) });
+  const checked = await Promise.all(candidates.map(resource => verifyResourceSchedule(resource, fetchWithTimeout)));
+  const updates = new Map(checked.map(resource => [resource.id, resource]));
+  return pending.map(resource => updates.get(resource.id) || resource);
 }
 
-function addToPlan(id) {
-  const resource = resourceById(id);
-  if (!resource) return;
-  const existing = state.helperPlan.find(item => item.id === id);
-  if (existing) {
-    state.helperPlan = state.helperPlan.filter(item => item.id !== id);
-  } else {
-    const directions = resource.latitude !== null
-      ? `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(`${resource.latitude},${resource.longitude}`)}`
-      : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${resource.name} ${state.location}`)}`;
-    state.helperPlan = addPlanResource(state.helperPlan, { ...resource, directions });
-  }
-  persistHelper();
-  render();
-}
-
-async function searchNearby({ coordinates = null } = {}) {
-  state.error = '';
-  state.cacheNotice = '';
+async function searchNearby({ coordinates = null, quiet = false } = {}) {
+  state.errorKey = '';
+  state.errorText = '';
+  state.noticeKey = '';
   state.loading = true;
-  render();
-  const key = cacheKey(state.location, state.category, state.radius);
+  if (!quiet) render();
+  const key = cacheKey(state.location, state.category || 'all', effectiveRadiusMiles());
   const cache = safeObject(STORAGE.cache);
   const cached = readCachedSearch(cache, key);
   if (cached) {
     state.liveResults = cached.resources;
-    state.cacheNotice = cached.stale ? t('stale') : 'Showing saved results while checking for updates.';
-    render();
+    state.noticeKey = cached.stale ? 'stale' : '';
+    if (!quiet) render();
   }
   if (state.offline) {
     state.loading = false;
-    if (cached) state.cacheNotice = t('cached');
-    render();
-    return;
+    if (cached) state.noticeKey = 'cached';
+    if (!quiet) render();
+    return state.liveResults;
   }
   try {
     const point = coordinates || await geocodeLocation(state.location);
     state.coordinates = { lat: point.lat, lng: point.lng };
     state.resolvedLocation = point.label || state.location;
-    let rows = await fetchNearbyResources({ lat: point.lat, lng: point.lng, radius: state.radius });
-    const desired = state.category !== 'all' ? [state.category] : detectCategories(state.query);
-    if (desired.length) rows = rows.filter(r => desired.includes(r.category));
+    let rows = await fetchNearbyResources({
+      lat: point.lat,
+      lng: point.lng,
+      radius: effectiveRadiusMiles()
+    });
+    const desired = state.category && state.category !== 'other'
+      ? [state.category]
+      : detectCategories(state.otherNeed);
+    if (desired.length) rows = rows.filter(resource => desired.includes(resource.category));
     rows = rankResources(mergeDuplicates(rows), { categories: desired }).slice(0, 50);
+    rows = await researchMissingSchedules(rows);
     state.liveResults = rows;
-    const nextCache = writeCachedSearch(cache, key, rows);
-    persistPreference(STORAGE.cache, nextCache);
-    persistPreference(STORAGE.searches, [...new Set([...safeArray(STORAGE.searches), state.location])].slice(-10));
-    state.cacheNotice = cached ? 'Saved results were refreshed.' : '';
+    persist(STORAGE.cache, writeCachedSearch(cache, key, rows));
+    persist(STORAGE.searches, [...new Set([...safeArray(STORAGE.searches), state.location])].slice(-10));
+    if (cached) state.noticeKey = 'refreshed';
   } catch (error) {
-    state.error = cached
-      ? `${error.message || 'Live search failed'} Saved results are still shown.`
-      : error.message || 'Live search failed. National directories are still available.';
-    if (cached) state.cacheNotice = t('cached');
+    if (error.code === 'AMBIGUOUS_LOCATION') state.errorKey = 'locationAmbiguous';
+    else state.errorKey = 'searchError';
+    if (cached) state.noticeKey = 'cached';
   } finally {
     state.loading = false;
-    render();
+    if (!quiet) render();
   }
+  return state.liveResults;
 }
 
-function submitSearch(form) {
+async function submitSearch(form) {
   const data = new FormData(form);
-  state.query = String(data.get('need') || '').trim();
+  state.category = String(data.get('need') || '');
+  state.otherNeed = String(data.get('otherNeed') || '').trim();
   state.location = String(data.get('location') || '').trim();
-  state.radius = Number(data.get('radius')) || 5;
+  state.unit = String(data.get('unit') || state.unit);
+  state.radiusValue = Number(data.get('radius')) || 5;
+  state.travelMode = String(data.get('travelMode') || 'walking');
+  state.query = searchNeed();
   state.coordinates = null;
-  const detected = detectCategories(state.query);
-  state.category = detected.length === 1 ? detected[0] : 'all';
+  if (!state.category || !state.location) {
+    state.errorKey = 'locationRequired';
+    render({ focus: !state.category ? '#needSelect' : '#locationInput' });
+    return;
+  }
+  if (state.category === 'other' && !state.otherNeed) {
+    state.errorKey = 'otherNeedRequired';
+    render({ focus: '#otherNeedInput' });
+    return;
+  }
+  state.searched = true;
   state.page = 'find';
   persistShared();
   render();
-  if (state.location) searchNearby();
-  else {
-    state.error = 'Add a general location to search nearby. National resources are still shown.';
-    render({ focus: '#locationInput' });
-  }
+  await searchNearby();
 }
 
-function clearPlan() {
-  const cleared = emptyPlan();
-  state.helperPlan = cleared.plan;
-  state.helperIntake = cleared.intake;
+function addToPlan(id) {
+  const resource = resourceById(id);
+  if (!resource) return;
+  if (state.helperPlan.some(item => item.id === id)) {
+    state.helperPlan = removePlanResource(state.helperPlan, id);
+  } else {
+    state.helperPlan = addPlanResource(state.helperPlan, {
+      ...resource,
+      directions: directionsUrl(resource, 'walking')
+    });
+  }
   persistHelper();
   render();
 }
+
+async function processReport(form) {
+  const data = new FormData(form);
+  const resource = resourceById(String(data.get('resourceId') || ''));
+  if (!resource) return;
+  const report = createCorrectionReport({
+    resource,
+    type: String(data.get('type') || ''),
+    details: String(data.get('details') || '')
+  });
+  state.corrections = queueCorrection(state.corrections, report);
+  persist(STORAGE.corrections, state.corrections);
+  state.reportSubmitted = true;
+  render();
+  try {
+    const checked = await verifyCorrectionReport(report, resource);
+    state.corrections = state.corrections.map(item => item.id === checked.id ? checked : item);
+    persist(STORAGE.corrections, state.corrections);
+  } catch {
+    // The queued report remains available for later administrative review.
+  }
+}
+
+async function sendChat(form) {
+  const input = form.querySelector('#chatInput');
+  const message = input.value.trim();
+  if (!message) return;
+  const messageLanguage = state.languageExplicit
+    ? (requestedLanguage(message) || state.lang)
+    : detectMessageLanguage(message, state.lang);
+  state.chatMessages.push({ role: 'user', text: message, language: messageLanguage });
+  const requested = requestedLanguage(message);
+  if (requested) {
+    state.lang = requested;
+    state.languageExplicit = true;
+    persistShared();
+  }
+  const messageLocation = locationFromMessage(message);
+  const messageCategory = assistantCategory(message);
+  if (messageLocation) state.location = messageLocation;
+  if (messageCategory) {
+    state.category = messageCategory;
+    state.query = categoryLabel(messageCategory);
+  }
+  if (state.location && state.category && (!state.searched || messageLocation || messageCategory)) {
+    state.searched = true;
+    await searchNearby({ quiet: true });
+  }
+  const answer = answerGroundedAssistant({
+    message,
+    selectedLanguage: state.lang,
+    languageExplicit: state.languageExplicit,
+    currentLocation: state.location,
+    resources: mergeDuplicates([...state.liveResults, ...sourceResources]),
+    context: state.chatContext,
+    selectedResource: currentResource(),
+    translate
+  });
+  state.chatContext = answer.context;
+  state.chatMessages.push({
+    role: 'assistant',
+    text: answer.text,
+    language: answer.language,
+    recommendations: answer.recommendations
+  });
+  persistShared();
+  render({ focus: '#chatInput' });
+}
+
+app.addEventListener('submit', event => {
+  event.preventDefault();
+  if (event.target.matches('#searchForm')) submitSearch(event.target);
+  if (event.target.matches('#chatForm')) sendChat(event.target);
+  if (event.target.matches('#reportForm')) processReport(event.target);
+});
 
 app.addEventListener('click', async event => {
   const target = event.target.closest('button, a');
@@ -842,37 +1206,65 @@ app.addEventListener('click', async event => {
     links.classList.toggle('open');
     target.setAttribute('aria-expanded', String(links.classList.contains('open')));
   }
-  if (target.matches('[data-category]')) {
-    state.category = target.dataset.category;
-    state.query = SELF_CATEGORIES.find(item => item.id === state.category)?.en || tx(category(state.category).label);
-    state.page = 'find';
-    persistShared();
-    render({ focus: '#main' });
-    if (state.location) searchNearby();
-  }
   if (target.matches('[data-gps]')) {
     if (!navigator.geolocation) {
-      state.error = 'Location services are unavailable. Enter a city or ZIP code instead.';
+      state.errorKey = 'locationDenied';
       render();
       return;
     }
     target.disabled = true;
-    target.textContent = 'Requesting permission…';
     navigator.geolocation.getCurrentPosition(
-      position => {
-        state.location = 'Current area';
-        state.page = 'find';
+      async position => {
+        state.location = tr('useLocation');
+        state.searched = Boolean(state.category);
+        state.page = state.searched ? 'find' : 'home';
         persistShared();
-        searchNearby({ coordinates: { lat: position.coords.latitude, lng: position.coords.longitude } });
+        if (state.searched) await searchNearby({ coordinates: { lat: position.coords.latitude, lng: position.coords.longitude } });
+        else render();
       },
       error => {
-        state.error = error.code === 3
-          ? 'Location request timed out. Enter a city or ZIP code instead.'
-          : 'Location permission was not granted. Manual location search still works.';
+        state.errorKey = error.code === 3 ? 'locationTimeout' : 'locationDenied';
         render({ focus: '#locationInput' });
       },
       { enableHighAccuracy: false, timeout: 10000, maximumAge: 300000 }
     );
+  }
+  if (target.matches('[data-save]')) {
+    const id = target.dataset.save;
+    state.saved.has(id) ? state.saved.delete(id) : state.saved.add(id);
+    persistShared();
+    render();
+  }
+  if (target.matches('[data-eligibility]')) {
+    state.eligibility.resourceId = target.dataset.eligibility;
+    state.eligibility.location = state.location;
+    state.eligibility.answers = {};
+    state.eligibility.step = 0;
+    state.eligibility.started = false;
+    state.page = 'eligibility';
+    render({ focus: '#main' });
+  }
+  if (target.matches('[data-registration]')) {
+    state.selectedResourceId = target.dataset.registration;
+    state.registrationStep = 0;
+    state.page = 'registration';
+    render({ focus: '#main' });
+  }
+  if (target.matches('[data-requirements]')) {
+    state.selectedResourceId = target.dataset.requirements;
+    state.panel = 'requirements';
+    render({ focus: '.drawer-close' });
+  }
+  if (target.matches('[data-report]')) {
+    state.selectedResourceId = target.dataset.report;
+    state.panel = 'report';
+    state.reportSubmitted = false;
+    render({ focus: '.drawer-close' });
+  }
+  if (target.matches('[data-close-panel]')) {
+    state.panel = '';
+    state.reportSubmitted = false;
+    render();
   }
   if (target.matches('[data-add-plan]')) addToPlan(target.dataset.addPlan);
   if (target.matches('[data-compare]')) {
@@ -885,56 +1277,22 @@ app.addEventListener('click', async event => {
     state.compareIds.clear();
     render();
   }
-  if (target.matches('[data-save]')) {
-    const id = target.dataset.save;
-    state.saved.has(id) ? state.saved.delete(id) : state.saved.add(id);
-    persistShared();
-    render();
-  }
-  if (target.matches('[data-resource-action]')) {
-    state.selectedResource = resourceById(target.dataset.id);
-    state.panel = target.dataset.resourceAction;
-    render({ focus: '.drawer-close' });
-  }
-  if (target.matches('[data-close-panel]') && !event.target.closest('[data-panel-content]')) {
-    state.panel = '';
-    state.selectedResource = null;
-    render();
-  }
-  if (target.matches('.drawer-close')) {
-    state.panel = '';
-    state.selectedResource = null;
-    render();
-  }
-  if (target.matches('[data-confirm-reminder]')) {
-    const item = resourceById(target.dataset.confirmReminder);
-    state.chatOpen = true;
-    state.chatMessages.push({ role: 'assistant', text: `Reminder: call ${item?.name || 'the organization'} to confirm availability before traveling.` });
-    render();
-  }
-  if (target.matches('[data-report]')) {
-    const item = resourceById(target.dataset.report);
-    const source = item?.sourceUrls?.[0] || item?.officialWebsite;
-    if (source) window.open(source, '_blank', 'noopener,noreferrer');
-    else {
-      state.error = 'No correction contact is published. Call the organization and note the correction locally.';
-      render();
-    }
-  }
   if (target.matches('[data-helper-search]')) {
-    state.query = state.helperIntake.immediateNeed || '';
+    state.otherNeed = state.helperIntake.immediateNeed || '';
+    state.category = detectCategories(state.otherNeed)[0] || 'other';
     state.location = state.helperIntake.location || state.location;
-    if (!state.query || !state.location) {
-      state.error = 'Immediate need and location are required to build resource options.';
+    if (!state.otherNeed || !state.location) {
+      state.errorKey = 'locationRequired';
       render();
       return;
     }
-    state.category = detectCategories(state.query)[0] || 'all';
+    state.query = searchNeed();
+    state.searched = true;
     state.page = 'find';
-    persistShared();
     persistHelper();
+    persistShared();
     render();
-    searchNearby();
+    await searchNearby();
   }
   if (target.matches('[data-clear-intake]')) {
     state.helperIntake = {};
@@ -946,39 +1304,87 @@ app.addEventListener('click', async event => {
     persistHelper();
     render();
   }
-  if (target.matches('[data-clear-plan]')) clearPlan();
+  if (target.matches('[data-clear-plan]')) {
+    const cleared = emptyPlan();
+    state.helperPlan = cleared.plan;
+    state.helperIntake = cleared.intake;
+    persistHelper();
+    render();
+  }
   if (target.matches('[data-copy-plan]')) {
     try {
       await navigator.clipboard.writeText(planText());
-      state.cacheNotice = 'Plan copied as plain text.';
+      state.noticeKey = 'copied';
     } catch {
-      state.error = 'Copy failed. Select the plan text after choosing Print, or copy each item manually.';
+      state.errorKey = 'copyFailed';
     }
     render();
   }
   if (target.matches('[data-print-plan]')) window.print();
   if (target.matches('[data-clear-filters]')) {
-    state.filters = { ...emptyFilters };
+    state.filters = { openNow: false, availableToday: false, walkIn: false, noId: false, noRegistration: false, accessible: false, language: '' };
+    render();
+  }
+  if (target.matches('[data-start-eligibility]')) {
+    const resourceSelect = document.querySelector('#eligibilityResource');
+    const locationInput = document.querySelector('#eligibilityLocation');
+    state.eligibility.resourceId = resourceSelect?.value || '';
+    state.eligibility.location = locationInput?.value.trim() || '';
+    if (!state.eligibility.resourceId || !state.eligibility.location) {
+      state.errorKey = 'locationRequired';
+      render();
+      return;
+    }
+    state.eligibility.started = true;
+    state.eligibility.step = 0;
+    state.eligibility.answers = {};
+    render();
+  }
+  if (target.matches('[data-next-eligibility]')) {
+    const resource = resourceById(state.eligibility.resourceId);
+    const questions = localEligibilityQuestions(resource, state.eligibility.location, state.eligibility.answers);
+    const question = questions[state.eligibility.step];
+    const field = document.querySelector('[data-eligibility-field]');
+    if (question && field) state.eligibility.answers[question.field] = field.value;
+    state.eligibility.step += 1;
+    render();
+  }
+  if (target.matches('[data-clear-eligibility]')) {
+    state.eligibility.answers = {};
+    state.eligibility.step = 0;
+    state.eligibility.started = false;
+    render();
+  }
+  if (target.matches('[data-registration-prev]')) {
+    state.registrationStep = Math.max(0, state.registrationStep - 1);
+    render();
+  }
+  if (target.matches('[data-registration-next]')) {
+    state.registrationStep = Math.min(2, state.registrationStep + 1);
     render();
   }
   if (target.matches('[data-clear-location]')) {
     state.location = '';
     state.coordinates = null;
+    state.eligibility.location = '';
     safeStorageRemove(STORAGE.location);
     safeStorageRemove('ba-coords');
     render();
   }
-  if (target.matches('[data-clear-eligibility]')) {
-    state.eligibilityAnswers = {};
-    render();
-  }
   if (target.matches('[data-clear-private]')) {
     clearPrivateData();
+    safeStorageRemove(STORAGE.corrections);
     state.location = '';
     state.coordinates = null;
     state.helperIntake = {};
     state.helperPlan = [];
     state.liveResults = [];
+    state.searched = false;
+    state.corrections = [];
+    state.eligibility = { resourceId: '', location: '', answers: {}, step: 0, started: false };
+    state.noticeKey = 'clearDataDone';
+    state.mode = '';
+    state.modePromptOpen = true;
     render();
   }
   if (target.matches('[data-chat]')) {
@@ -987,32 +1393,26 @@ app.addEventListener('click', async event => {
   }
 });
 
-app.addEventListener('submit', event => {
-  event.preventDefault();
-  if (event.target.matches('#searchForm')) submitSearch(event.target);
-  if (event.target.matches('#chatForm')) {
-    const input = event.target.querySelector('#chatInput');
-    const question = input.value.trim();
-    if (!question) return;
-    state.chatMessages.push({ role: 'user', text: question });
-    const response = routeAssistantRequest({
-      question,
-      mode: state.mode,
-      resources: allResults(),
-      intake: state.helperIntake,
-      selectedResource: state.selectedResource
-    });
-    state.chatMessages.push({ role: 'assistant', text: response.message });
-    render({ focus: '#chatInput' });
-  }
-});
-
 app.addEventListener('change', event => {
   const target = event.target;
   if (target.matches('#language')) {
+    captureSearchDraft();
     state.lang = target.value;
+    state.languageExplicit = true;
     persistShared();
     render();
+  }
+  if (target.matches('#needSelect')) {
+    captureSearchDraft();
+    state.category = target.value;
+    state.errorKey = '';
+    render({ focus: state.category === 'other' ? '#otherNeedInput' : '#locationInput' });
+  }
+  if (target.matches('#distanceUnit')) {
+    captureSearchDraft();
+    state.unit = target.value;
+    persistShared();
+    render({ focus: '#distanceUnit' });
   }
   if (target.matches('[data-intake]')) {
     state.helperIntake[target.name] = target.value;
@@ -1028,7 +1428,7 @@ app.addEventListener('change', event => {
     render();
   }
   if (target.matches('[data-plan-status]')) {
-    state.helperPlan = updatePlanStatus(state.helperPlan, target.dataset.planStatus, target.value);
+    state.helperPlan = updatePlanStatus(state.helperPlan, target.dataset.planStatus, STATUS_STORAGE[target.value]);
     persistHelper();
     render();
   }
@@ -1036,9 +1436,11 @@ app.addEventListener('change', event => {
     state.helperPlan = updatePlanNote(state.helperPlan, target.dataset.planNote, target.value);
     persistHelper();
   }
-  if (target.matches('[data-eligibility-answer]')) {
-    state.eligibilityAnswers[target.dataset.eligibilityAnswer] = target.value;
-    render({ focus: `[data-eligibility-answer="${target.dataset.eligibilityAnswer}"]` });
+  if (target.matches('#eligibilityResource')) {
+    state.eligibility.resourceId = target.value;
+    state.eligibility.started = false;
+    state.eligibility.answers = {};
+    state.eligibility.step = 0;
   }
 });
 
@@ -1052,7 +1454,7 @@ window.addEventListener('offline', () => {
 });
 
 if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => navigator.serviceWorker.register('./service-worker.js').catch(() => { }));
+  window.addEventListener('load', () => navigator.serviceWorker.register('./service-worker.js').catch(() => {}));
 }
 
 render();

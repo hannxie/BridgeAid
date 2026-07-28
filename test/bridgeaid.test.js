@@ -53,6 +53,35 @@ import {
 import { detectIntent, routeAssistantRequest } from '../js/services/orchestrator.js';
 import { requireAdmin, applyAdminAction, AuthorizationError } from '../server/services/admin-service.js';
 import { createJob, recordJobFailure } from '../server/services/background-job-service.js';
+import {
+  LOCALES,
+  translate,
+  detectMessageLanguage,
+  requestedLanguage,
+  localeCompleteness
+} from '../js/localization.js';
+import {
+  assistantIntent,
+  assistantCategory,
+  locationFromMessage,
+  answerGroundedAssistant
+} from '../js/services/grounded-assistant.js';
+import {
+  servesLocation,
+  localProgramForResource,
+  localEligibilityQuestions,
+  evaluateLocalEligibility
+} from '../js/services/local-eligibility-service.js';
+import {
+  createCorrectionReport,
+  queueCorrection,
+  verifyCorrectionReport
+} from '../js/services/correction-service.js';
+import {
+  sourcePriority,
+  verifyResourceSchedule
+} from '../js/services/schedule-verification-service.js';
+import { registrationGuidance } from '../js/services/registration-service.js';
 
 class MemoryStorage {
   constructor() {
@@ -335,12 +364,12 @@ test('background jobs record bounded retries and failures', () => {
 });
 
 test('critical UI copy and privacy constraints are present', async () => {
-  const app = await readFile(new URL('../js/app.js', import.meta.url), 'utf8');
-  assert.match(app, /How are you using BridgeAid\?/);
-  assert.match(app, /What do you need right now\?/);
-  assert.match(app, /Help someone find support\./);
-  assert.match(app, /Only enter information you have permission to use/);
-  assert.doesNotMatch(app, /Social Security number["']?\s*[:=]\s*['"]/i);
+  const locale = await readFile(new URL('../js/localization.js', import.meta.url), 'utf8');
+  assert.match(locale, /How are you using BridgeAid\?/);
+  assert.match(locale, /What do you need right now\?/);
+  assert.match(locale, /Help someone find support\./);
+  assert.match(locale, /Only enter information you have permission to use/);
+  assert.doesNotMatch(locale, /Social Security number["']?\s*[:=]\s*['"]/i);
 });
 
 test('responsive CSS includes 320-friendly, tablet, desktop, reduced-motion, and print rules', async () => {
@@ -349,4 +378,230 @@ test('responsive CSS includes 320-friendly, tablet, desktop, reduced-motion, and
   assert.match(css, /max-width:760px/);
   assert.match(css, /prefers-reduced-motion/);
   assert.match(css, /@media print/);
+});
+
+test('all three locales contain exactly the same translation keys', () => {
+  const completeness = localeCompleteness();
+  for (const language of ['en', 'zh', 'es']) {
+    assert.deepEqual(completeness[language].missing, []);
+    assert.deepEqual(completeness[language].extra, []);
+  }
+});
+
+test('every literal translation key used by the app exists in all locales', async () => {
+  const appSource = await readFile(new URL('../js/app.js', import.meta.url), 'utf8');
+  const usedKeys = [...appSource.matchAll(/\btr\(['"]([^'"]+)['"]/g)].map(match => match[1]);
+  for (const key of usedKeys) {
+    assert.ok(key in LOCALES.en, `missing English key: ${key}`);
+    assert.ok(key in LOCALES.zh, `missing Chinese key: ${key}`);
+    assert.ok(key in LOCALES.es, `missing Spanish key: ${key}`);
+  }
+});
+
+test('reviewed Chinese and Spanish core copy is natural and complete', () => {
+  assert.equal(translate('zh', 'selfHero'), '您现在最需要什么？');
+  assert.equal(translate('zh', 'privacyTitle'), '您的信息由您掌控。');
+  assert.equal(translate('es', 'selfHero'), '¿Qué necesita en este momento?');
+  assert.equal(translate('es', 'privacyTitle'), 'Usted mantiene el control de su información.');
+});
+
+test('message language detection and explicit language requests work', () => {
+  assert.equal(detectMessageLanguage('我想找食物', 'en'), 'zh');
+  assert.equal(detectMessageLanguage('Necesito comida cerca', 'en'), 'es');
+  assert.equal(detectMessageLanguage('I need food', 'zh'), 'en');
+  assert.equal(requestedLanguage('Please answer in Spanish'), 'es');
+  assert.equal(requestedLanguage('请用中文回答'), 'zh');
+});
+
+test('assistant understands multilingual categories, locations, and distinct intents', () => {
+  assert.equal(assistantCategory('我需要食物'), 'food');
+  assert.equal(assistantCategory('Necesito ayuda legal'), 'legal');
+  assert.equal(locationFromMessage('Find food near Seattle, WA'), 'Seattle, WA');
+  assert.equal(assistantIntent('What time are you open?'), 'hours');
+  assert.equal(assistantIntent('How do I apply?'), 'registration');
+});
+
+test('assistant language requests are not mistaken for locations', () => {
+  assert.equal(locationFromMessage('Please answer in English. How do I apply?'), '');
+  assert.equal(locationFromMessage('Respóndame en español. ¿Cómo solicito?'), '');
+  assert.equal(locationFromMessage('Find food in Seattle, WA'), 'Seattle, WA');
+});
+
+test('grounded assistant cites stored resources and responds in the message language', () => {
+  const fixture = [{
+    id: 'local-food',
+    name: 'Community Pantry',
+    category: 'food',
+    services: ['food'],
+    address: '100 Main St, Seattle, WA 98101',
+    hours: { en: 'Mon 9–5', zh: '周一 9:00–17:00', es: 'Lun 9–5' },
+    eligibility: { en: 'Seattle residents', zh: '西雅图居民', es: 'Residentes de Seattle' },
+    source: 'Official program',
+    sourceUrls: ['https://official.example/program'],
+    verified: '2026-07-01',
+    distance: 1
+  }];
+  const answer = answerGroundedAssistant({
+    message: 'Necesito comida en 98101',
+    selectedLanguage: 'en',
+    languageExplicit: false,
+    resources: fixture,
+    translate
+  });
+  assert.equal(answer.language, 'es');
+  assert.match(answer.text, /Encontré/);
+  assert.equal(answer.recommendations[0].name, 'Community Pantry');
+  assert.equal(answer.recommendations[0].address, '100 Main St, Seattle, WA 98101');
+});
+
+test('assistant asks specific follow-ups and does not repeat unrelated answers', () => {
+  const missingLocation = answerGroundedAssistant({
+    message: 'I need food',
+    selectedLanguage: 'en',
+    resources: [],
+    translate
+  });
+  assert.equal(missingLocation.followUp, 'location');
+  const resource = {
+    id: 'clinic',
+    name: 'Local Clinic',
+    category: 'health',
+    services: ['health'],
+    address: '1 Pine St, Seattle, WA',
+    hours: 'Mon–Fri 9–5',
+    sourceUrls: ['https://official.example'],
+    registrationUrl: 'https://official.example/apply'
+  };
+  const hours = answerGroundedAssistant({
+    message: 'What hours is the clinic open?',
+    selectedLanguage: 'en',
+    currentLocation: 'Seattle',
+    resources: [resource],
+    selectedResource: resource,
+    translate
+  });
+  const registration = answerGroundedAssistant({
+    message: 'How do I apply?',
+    selectedLanguage: 'en',
+    currentLocation: 'Seattle',
+    resources: [resource],
+    selectedResource: resource,
+    translate
+  });
+  assert.notEqual(hours.text, registration.text);
+});
+
+test('local eligibility requires both a matching service area and official rules', () => {
+  const fixture = {
+    id: 'local-benefit',
+    name: 'King County Benefit',
+    category: 'benefits',
+    address: 'Seattle, WA 98101',
+    serviceAreas: ['King County', '98101'],
+    eligibilityRules: [{ field: 'householdSize', operator: 'gte', value: 1 }],
+    eligibilitySourceUrl: 'https://kingcounty.example/eligibility',
+    eligibilityLastVerified: '2026-07-20',
+    sourceUrls: ['https://kingcounty.example/eligibility']
+  };
+  assert.equal(servesLocation(fixture, '98101'), true);
+  assert.equal(localProgramForResource(fixture, '98101').localEligibilityVerified, true);
+  assert.equal(localProgramForResource(fixture, 'Tacoma').localEligibilityVerified, false);
+});
+
+test('local eligibility asks only program-specific questions and explains results', () => {
+  const fixture = {
+    id: 'local-benefit',
+    name: 'Local Benefit',
+    address: 'Seattle, WA 98101',
+    eligibilityRules: [
+      { field: 'householdSize', operator: 'gte', value: 1 },
+      { field: 'income', operator: 'lte', value: 30000 }
+    ],
+    eligibilitySourceUrl: 'https://official.example/eligibility',
+    sourceUrls: ['https://official.example/eligibility']
+  };
+  const questions = localEligibilityQuestions(fixture, '98101', {});
+  assert.deepEqual(questions.map(question => question.field), ['householdSize', 'income']);
+  const result = evaluateLocalEligibility(fixture, '98101', { householdSize: 2, income: 25000 });
+  assert.equal(result.status, 'Likely eligible');
+  assert.equal(result.passed.length, 2);
+});
+
+test('generic national eligibility is not presented as confirmed local eligibility', () => {
+  const result = evaluateLocalEligibility({
+    id: 'national',
+    name: 'National Directory',
+    eligibilityRules: [{ field: 'age', operator: 'gte', value: 18 }],
+    sourceUrls: ['https://official.example']
+  }, '98101', { age: 30 });
+  assert.equal(result.status, 'Unable to determine');
+});
+
+test('registration guidance always provides a verified path or clear alternative', () => {
+  const online = registrationGuidance({
+    registrationUrl: 'https://apply.example.org/form',
+    officialDomains: ['example.org']
+  });
+  assert.equal(online.applicationUrl, 'https://apply.example.org/form');
+  const phone = registrationGuidance({ phone: '211', registrationRequirement: 'Call to apply' });
+  assert.equal(phone.phoneOrInPerson, true);
+  assert.equal(phone.hasVerifiedPath, true);
+});
+
+test('correction reports queue without overwriting verified resource data', () => {
+  const resource = { id: 'a', name: 'Program', address: 'Old address', sourceUrls: ['https://official.example'] };
+  const report = createCorrectionReport({ resource, type: 'address', details: 'The sign shows a new address.', now: new Date('2026-01-01T00:00:00Z') });
+  const queue = queueCorrection([], report);
+  assert.equal(queue[0].status, 'verification_queued');
+  assert.equal(resource.address, 'Old address');
+});
+
+test('correction verification sends confirmed evidence to administrative review', async () => {
+  const resource = { id: 'a', name: 'Program', sourceUrls: ['https://official.example'] };
+  const report = createCorrectionReport({ resource, type: 'closed' });
+  const fetcher = async () => ({ ok: true, text: async () => '<p>Program permanently closed</p>' });
+  const verified = await verifyCorrectionReport(report, resource, fetcher, new Date('2026-01-02T00:00:00Z'));
+  assert.equal(verified.status, 'evidence_found');
+  assert.equal(verified.requiresAdminReview, true);
+  assert.equal(verified.proposedChange.evidenceUrl, 'https://official.example');
+});
+
+test('schedule verification checks official sources and extracts JSON-LD hours', async () => {
+  const resource = { id: 'a', officialWebsite: 'https://official.example', sourceUrls: ['https://directory.example'] };
+  assert.equal(sourcePriority(resource)[0], 'https://official.example');
+  const fetcher = async () => ({
+    ok: true,
+    text: async () => '<script type="application/ld+json">{"openingHours":["Mo-Fr 09:00-17:00"]}</script>'
+  });
+  const checked = await verifyResourceSchedule(resource, fetcher, new Date('2026-01-02T00:00:00Z'));
+  assert.equal(checked.hours, 'Mo-Fr 09:00-17:00');
+  assert.equal(checked.scheduleVerificationStatus, 'verified_from_official_source');
+});
+
+test('missing schedule becomes uncertain only after source checks fail', async () => {
+  const resource = { id: 'a', officialWebsite: 'https://official.example' };
+  const fetcher = async () => ({ ok: true, text: async () => '<html>No hours listed</html>' });
+  const checked = await verifyResourceSchedule(resource, fetcher, new Date('2026-01-02T00:00:00Z'));
+  assert.equal(checked.scheduleVerificationStatus, 'searched_no_reliable_schedule');
+  assert.equal(checked.scheduleVerificationAttempts.length, 1);
+});
+
+test('removed support numbers and confidence scores are absent from the interface source', async () => {
+  const paths = [
+    '../js/app.js',
+    '../js/localization.js',
+    '../data/resources.js',
+    '../README.md'
+  ];
+  const combined = (await Promise.all(paths.map(path => readFile(new URL(path, import.meta.url), 'utf8')))).join('\n');
+  assert.doesNotMatch(combined, /9(?:11|88)/);
+  assert.doesNotMatch(await readFile(new URL('../js/app.js', import.meta.url), 'utf8'), /confidence/i);
+});
+
+test('home page implementation does not render preloaded resource cards', async () => {
+  const appSource = await readFile(new URL('../js/app.js', import.meta.url), 'utf8');
+  const homeFunction = appSource.slice(appSource.indexOf('function homePage()'), appSource.indexOf('function filtersPanel()'));
+  assert.doesNotMatch(homeFunction, /resourceCard\(/);
+  assert.match(homeFunction, /noHomeResources/);
+  assert.match(appSource, /<select id="needSelect"/);
 });

@@ -4,7 +4,7 @@ BridgeAid is a privacy-oriented, no-build web application for finding free and r
 
 The app now has two experiences in one shared interface:
 
-- **I need help** (`self`) prioritizes immediate actions, plain language, urgent categories, and at most a few next steps.
+- **I need help** (`self`) prioritizes immediate actions, plain language, a need dropdown, and focused next steps.
 - **I’m helping someone** (`helper`) adds optional guided intake, resource comparison, status tracking, notes, and a printable resource plan.
 
 Every real-world resource shown by BridgeAid has a traceable source. Availability and eligibility are never guaranteed.
@@ -21,7 +21,7 @@ The original project was a static HTML/CSS/JavaScript progressive web app with:
 - National fallback resources
 - English, Spanish, and Simplified Chinese labels
 - Saved resources in browser storage
-- 911, 988, and 211 links
+- A general 211 community-resource link
 - A service worker for offline assets
 - Responsive and reduced-motion CSS
 
@@ -52,19 +52,9 @@ The choice is stored under `bridgeaid-mode` and validated as either `self` or `h
 
 ### Self mode
 
-Self mode uses the heading “What do you need right now?” and puts urgent categories first:
+Self mode uses the heading “What do you need right now?” and a translated need dropdown covering food, shelter, safe places, health care, mental health, hygiene, transportation, benefits, employment, legal help, family support, and an “Other” field. The home page does not preload resources; results appear only after a need and location are submitted.
 
-- Food today
-- Sleep tonight
-- Safe place
-- Health care
-- Shower or laundry
-- Transportation
-- Benefits
-- Jobs
-- Legal help
-
-Resource actions prioritize call, directions, and the official website. Empty facts are omitted. Uncertain schedules tell the user to call ahead.
+Resource actions prioritize call, walking directions, and official sources. Users can switch to transit or driving directions. Empty facts are omitted, typical hours are labeled, and an uncertain schedule appears only after available sources have been checked.
 
 ### Helper mode
 
@@ -81,14 +71,14 @@ The helper plan supports:
 - Printing with `window.print()`
 - Clearing the complete helper intake and plan
 
-The safety-today response does not hide ordinary resources. Choosing “Not safe tonight” adds visible 911 and 988 guidance.
+The safety-today response does not hide ordinary resources. BridgeAid keeps 211 available for general community-resource referrals.
 
 ## BridgeAI architecture
 
-Users see one BridgeAI assistant. `js/services/orchestrator.js` detects intent and delegates to modular services:
+Users see one BridgeAI assistant. `js/services/grounded-assistant.js` detects the latest-message language, intent, category, and location; remembers conversation context; and recommends only stored or live sourced records:
 
 ```text
-BridgeAI orchestrator
+BridgeAI
 ├── Location and Resource Finder
 ├── Hours and Event Verification
 ├── Eligibility Assistant
@@ -100,16 +90,19 @@ The current browser implementation is deterministic and source-bound; it does no
 
 Relevant files:
 
-- `js/services/orchestrator.js`
+- `js/services/grounded-assistant.js`
 - `js/services/location-service.js`
 - `js/services/schedule-service.js`
 - `js/services/eligibility-service.js`
 - `js/services/registration-service.js`
+- `js/services/local-eligibility-service.js`
+- `js/services/schedule-verification-service.js`
+- `js/services/correction-service.js`
 - `js/services/resource-service.js`
 
 ## Resource model and persistence
 
-`normalizeResource()` keeps older records usable while supporting structured fields such as organization/program names, coordinates, schedules, eligibility rules, documents, accessibility, languages, transportation, source URLs, verification status, confidence, and conflicts.
+`normalizeResource()` keeps older records usable while supporting structured fields such as organization/program names, coordinates, schedules, local eligibility rules, documents, accessibility, languages, transportation, source URLs, verification status, and conflicts. Confidence scores are not displayed.
 
 The existing national records remain in `data/resources.js`.
 
@@ -127,7 +120,7 @@ OpenStreetMap data is community-maintained and explicitly labeled for confirmati
 
 ### Future server database
 
-`migrations/001_resource_foundation.sql` defines the production-oriented foundation for:
+`migrations/001_resource_foundation.sql` and `migrations/002_correction_verification.sql` define the production-oriented foundation for:
 
 - Resources
 - Supporting sources
@@ -237,7 +230,7 @@ or:
 node --test
 ```
 
-The deterministic suite covers:
+The deterministic suite contains 59 checks covering:
 
 - Mode validation, persistence, switching, and location preservation
 - Storage corruption and blocked-storage behavior
@@ -262,11 +255,11 @@ The deterministic suite covers:
 1. Clear this site’s local browser data and reload. Confirm the mode selector appears.
 2. Choose “I need help,” reload, and confirm the choice persists.
 3. Enter a general location, switch to helper mode, switch back, and confirm the location remains.
-4. Confirm self mode shows urgent categories and call/directions/official-site actions.
+4. Confirm the home page shows no preloaded resources and the need selector includes “Other.”
 5. Switch to helper mode and complete only immediate need and location.
-6. Choose “Not safe tonight” and confirm 911/988 guidance appears without hiding resources.
+6. Choose “Not safe tonight” and confirm the general safety notice appears without hiding resources.
 7. Add a resource to the plan, compare resources, update status, add a note, copy, print, remove, and clear.
-8. Open requirements, eligibility, and registration panels. Confirm they state uncertainty and do not promise service.
+8. Open the local eligibility page and registration workflow. Confirm the selected program, location, official source, and uncertainty are shown.
 9. Disable the network and repeat a previously cached search. Confirm saved/static results remain.
 10. Test keyboard-only navigation, visible focus, 200% browser zoom, and a screen reader.
 11. Test widths of 320 px, 768 px, and desktop.
@@ -299,7 +292,7 @@ Translations are interface summaries, not replacements for official legal or eli
 - The SQL migration, admin service, and job service are development foundations only.
 - No authenticated administrative dashboard is exposed.
 - No online form is submitted by BridgeAid.
-- Correction actions currently open the best available source; a production correction endpoint requires a backend.
+- Correction reports enter a device-local verification queue, attempt source rechecks, and preserve the verified record. Server synchronization and staff review require a production backend.
 - Browser storage is device-local, unencrypted, and unsuitable for sensitive case management.
 - Live availability, capacity, beds, supplies, appointments, funding, and final eligibility cannot be guaranteed.
 

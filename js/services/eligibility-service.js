@@ -13,6 +13,7 @@ export function evaluateEligibility(rules = [], answers = {}) {
     };
   }
   const reasons = [];
+  const details = [];
   const missing = [];
   let failed = false;
   for (const rule of rules) {
@@ -33,11 +34,12 @@ export function evaluateEligibility(rules = [], answers = {}) {
       else passed = Number(value) <= limit;
     }
     reasons.push(`${rule.label || rule.field}: ${passed ? 'meets the published rule' : 'does not meet the published rule'}.`);
+    details.push({ field: rule.field, label: rule.label || rule.field, passed });
     failed ||= !passed;
   }
-  if (failed) return { status: 'Likely not eligible', reasons, missing: [...new Set(missing)] };
-  if (missing.length) return { status: 'Possibly eligible', reasons, missing: [...new Set(missing)] };
-  return { status: 'Likely eligible', reasons, missing: [] };
+  if (failed) return { status: 'Likely not eligible', reasons, details, missing: [...new Set(missing)] };
+  if (missing.length) return { status: 'Possibly eligible', reasons, details, missing: [...new Set(missing)] };
+  return { status: 'Likely eligible', reasons, details, missing: [] };
 }
 
 export function summarizeEligibility(resource) {

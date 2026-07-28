@@ -1,9 +1,10 @@
-const CACHE = 'bridgeaid-v4';
+const CACHE = 'bridgeaid-v6';
 const ASSETS = [
   './',
   './index.html',
   './css/styles.css',
   './js/app.js',
+  './js/localization.js',
   './data/resources.js',
   './manifest.webmanifest',
   './js/services/storage.js',
@@ -14,7 +15,11 @@ const ASSETS = [
   './js/services/registration-service.js',
   './js/services/orchestrator.js',
   './js/services/html-service.js',
-  './js/services/helper-plan-service.js'
+  './js/services/helper-plan-service.js',
+  './js/services/grounded-assistant.js',
+  './js/services/local-eligibility-service.js',
+  './js/services/correction-service.js',
+  './js/services/schedule-verification-service.js'
 ];
 self.addEventListener('install', e => e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS))));
 self.addEventListener('activate', e => e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k))))));

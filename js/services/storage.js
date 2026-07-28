@@ -43,12 +43,18 @@ export function switchMode(state, mode, storage = globalThis.localStorage) {
 
 export function clearPrivateData(storage = globalThis.localStorage) {
   [
+    'bridgeaid-mode',
     'bridgeaid-location',
+    'bridgeaid-language-explicit',
+    'bridgeaid-distance-unit',
     'bridgeaid-helper-intake',
     'bridgeaid-helper-plan',
     'bridgeaid-resource-cache',
     'bridgeaid-saved-searches',
+    'bridgeaid-correction-queue',
     'ba-location',
-    'ba-coords'
+    'ba-coords',
+    'ba-lang',
+    'ba-saved'
   ].forEach(key => safeStorageRemove(key, storage));
 }
