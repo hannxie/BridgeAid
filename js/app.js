@@ -76,7 +76,6 @@ const COPY = {
     helperSub: 'Answer a few questions to build a resource plan.',
     need: 'What help is needed?',
     needPlaceholder: 'Food today, a safe place, health care…',
-    location: 'City, ZIP code, county, neighborhood, address, or landmark',
     search: 'Find resources',
     gps: 'Use my location',
     results: 'Resource results',
@@ -364,7 +363,7 @@ function searchBox(compact = false) {
     <label>
       <span>${t('location')}</span>
       <input id="locationInput" name="location" value="${attr(state.location)}" placeholder="${attr(t('location'))}" autocomplete="postal-code" aria-describedby="location-privacy">
-      <small id="location-privacy">A general location is enough. Exact GPS coordinates are not saved.</small>
+
     </label>
     <label class="radius-control">
       <span>Search radius</span>
@@ -1053,7 +1052,7 @@ window.addEventListener('offline', () => {
 });
 
 if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => navigator.serviceWorker.register('./service-worker.js').catch(() => {}));
+  window.addEventListener('load', () => navigator.serviceWorker.register('./service-worker.js').catch(() => { }));
 }
 
 render();
