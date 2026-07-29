@@ -3,8 +3,8 @@ import {
   keywordMap,
   resources as sourceResources,
   nationwideResources
-} from '../data/resources.js?v=12';
-import { translate, detectMessageLanguage, requestedLanguage } from './localization.js?v=12';
+} from '../data/resources.js?v=13';
+import { translate, detectMessageLanguage, requestedLanguage } from './localization.js?v=13';
 import {
   safeStorageGet,
   safeStorageSet,
@@ -26,13 +26,13 @@ import {
   resourceIsFresh,
   freshResources,
   searchSignature
-} from './services/resource-service.js?v=12';
+} from './services/resource-service.js?v=13';
 import {
   geocodeLocation,
   fetchNearbyResources,
   geocodeResourceAddresses,
   suggestLocations
-} from './services/location-service.js?v=12';
+} from './services/location-service.js?v=13';
 import {
   formatScheduleTime,
   resourceScheduleState,
@@ -53,13 +53,13 @@ import {
   localEligibilityQuestions,
   evaluateLocalEligibility,
   servesLocation
-} from './services/local-eligibility-service.js?v=12';
+} from './services/local-eligibility-service.js?v=13';
 import { registrationGuidance } from './services/registration-service.js';
 import {
   answerGroundedAssistant,
   assistantCategory,
   locationFromMessage
-} from './services/grounded-assistant.js?v=12';
+} from './services/grounded-assistant.js?v=13';
 import {
   createCorrectionReport,
   queueCorrection,
@@ -72,11 +72,18 @@ import {
   updatePlanStatus,
   updatePlanNote,
   updatePlanQuestions,
-  removePlanResource,
-  clearPlan as emptyPlan
+  removePlanResource
 } from './services/helper-plan-service.js';
 import { buildDecisionPlan, normalizePlanConstraints } from './services/decision-plan-service.js';
+import { hashForPage, isCurrentPage, pageFromHash } from './services/route-service.js';
 import { exportEligibilityCsv } from './services/eligibility-data-service.js';
+import {
+  createSearchLifecycle,
+  beginSearchState,
+  completeSearchState,
+  searchFailureOutcome,
+  diagnosticFingerprint
+} from './services/search-lifecycle-service.js';
 
 const STORAGE = {
   mode: 'bridgeaid-mode',
@@ -134,10 +141,11 @@ const initialLanguage = safeStorageGet(STORAGE.language, 'en');
 const state = {
   mode: loadMode(),
   modePromptOpen: false,
-  page: 'home',
+  page: pageFromHash(window.location.hash),
   lang: ['en', 'zh', 'es'].includes(initialLanguage) ? initialLanguage : 'en',
   languageExplicit: Boolean(safeStorageGet(STORAGE.languageExplicit, false)),
   category: '',
+  searchCategories: [],
   otherNeed: '',
   situation: '',
   situationConstraints: parseSituation(''),
@@ -169,6 +177,7 @@ const state = {
   storedResults: sourceResources,
   resolvedLocation: '',
   activeSearchKey: '',
+  activeSearchId: 0,
   loading: false,
   errorKey: '',
   errorText: '',
@@ -184,6 +193,8 @@ const state = {
   helperPlan: safeArray(STORAGE.helperPlan),
   planConstraints: normalizePlanConstraints(),
   decisionPlan: null,
+  planStatus: 'idle',
+  planError: '',
   compareIds: new Set(),
   selectedResourceId: '',
   panel: '',
@@ -217,9 +228,9 @@ function safeArray(key) {
 const app = document.querySelector('#app');
 const translationCache = memoizeByKey(500);
 const responseCache = memoizeByKey(100);
-const searchCoordinator = createRequestCoordinator();
 const enrichmentCoordinator = createRequestCoordinator();
 const locationSuggestionCoordinator = createRequestCoordinator();
+const searchLifecycle = createSearchLifecycle();
 let locationSuggestionSequence = 0;
 const tr = (key, variables = {}, language = state.lang) => {
   const cacheKey = `${language}|${key}|${JSON.stringify(variables)}`;
@@ -287,19 +298,24 @@ function detectCategories(query) {
 }
 
 function desiredCategories() {
-  const structured = state.category && !['all', 'other'].includes(state.category)
-    ? [state.category]
-    : [];
+  const structured = state.searchCategories.length
+    ? state.searchCategories
+    : state.category && !['all', 'other'].includes(state.category)
+      ? [state.category]
+      : [];
   return [...new Set([
     ...structured,
-    ...(Array.isArray(state.helperIntake.serviceCategories) ? state.helperIntake.serviceCategories : []),
     ...(state.situationConstraints.categories || []),
-    ...detectCategories(`${state.otherNeed} ${state.situation} ${state.helperIntake.situation || ''}`)
+    ...detectCategories(`${state.otherNeed} ${state.situation}`)
   ])].sort();
 }
 
 function searchNeed() {
-  const need = state.category === 'other' ? state.otherNeed.trim() : categoryLabel(state.category);
+  const need = state.category === 'other'
+    ? state.otherNeed.trim()
+    : state.searchCategories.length > 1
+      ? state.searchCategories.map(categoryLabel).join(', ')
+      : categoryLabel(state.category);
   return [need, state.situation.trim()].filter(Boolean).join(' · ');
 }
 
@@ -307,8 +323,8 @@ function recordSearchDiagnostic(event, details = {}) {
   const entry = {
     at: new Date().toISOString(),
     event,
-    key: state.activeSearchKey,
-    location: state.location,
+    requestId: state.activeSearchId,
+    searchFingerprint: diagnosticFingerprint(state.activeSearchKey),
     category: state.category,
     resultCount: state.liveResults.length,
     ...details
@@ -326,21 +342,10 @@ function mergeSearchResults(existing, incoming, desired = []) {
 }
 
 function applySituationFilters(text) {
-  const value = String(text || '').toLowerCase();
   state.situationConstraints = parseSituation(text, {
     location: state.location || state.helperIntake.location,
     coordinates: state.coordinates
   });
-  if (/no (?:photo )?(?:id|identification)|without (?:an? )?(?:id|identification)|do(?:es)? not have (?:an? )?(?:id|identification)|sin identificaci[oó]n/.test(value)) {
-    state.filters.noId = true;
-  }
-  if (/tonight|today|this evening|esta noche|hoy|今晚|今天/.test(value)) {
-    if (!state.situationConstraints.requestedInstant) state.filters.availableToday = true;
-  }
-  if (/wheelchair|silla de ruedas|轮椅/.test(value)) {
-    state.filters.accessible = true;
-  }
-  if (state.situationConstraints.walkInOnly) state.filters.walkIn = true;
   if (Number.isFinite(state.situationConstraints.maxDistance)) {
     state.radiusValue = Math.min(state.radiusValue, state.situationConstraints.maxDistance);
   }
@@ -435,20 +440,26 @@ function modeSelector() {
 }
 
 function header() {
+  const navButton = (page, label) => {
+    const current = isCurrentPage(state.page, page);
+    return `<button data-page="${page}"${current ? ' class="active" aria-current="page"' : ''}>${label}</button>`;
+  };
+  const brandCurrent = isCurrentPage(state.page, 'home');
   return `<header class="topbar">
     <nav class="wrap nav" aria-label="${attr(tr('mainNavigation'))}">
-      <button class="brand" data-page="home" aria-label="${attr(tr('navHome'))}">
+      <button class="brand" data-page="home" aria-label="${attr(tr('navHome'))}"${brandCurrent ? ' aria-current="page"' : ''}>
         <span class="logo" aria-hidden="true">B</span>
         <span>BridgeAid<small>${tr('brandTagline')}</small></span>
       </button>
       <button class="mobile-menu" data-menu aria-label="${attr(tr('openMenu'))}" aria-expanded="false">☰</button>
       <div class="nav-links" id="navLinks">
-        <button data-page="home">${tr('navHome')}</button>
-        <button data-page="find">${tr('navFind')}</button>
-        <button data-page="nationwide">${tr('navNationwide')}</button>
-        <button data-page="eligibility">${tr('navEligibility')}</button>
-        <button data-page="saved">${tr('navSaved')} (${state.saved.size})</button>
-        <button data-page="privacy">${tr('navPrivacy')}</button>
+        ${navButton('home', tr('navHome'))}
+        ${navButton('find', tr('navFind'))}
+        ${navButton('nationwide', tr('navNationwide'))}
+        ${navButton('eligibility', tr('navEligibility'))}
+        ${navButton('actionPlan', `${tr('navActionPlan')} (${state.helperPlan.length})`)}
+        ${navButton('saved', `${tr('navSaved')} (${state.saved.size})`)}
+        ${navButton('privacy', tr('navPrivacy'))}
       </div>
       <div class="nav-actions">
         <button class="mode-chip" data-switch-mode aria-label="${attr(tr('switchMode'))}">
@@ -851,9 +862,9 @@ function resourceCard(raw, options = {}) {
       <button class="text-action" data-registration="${attr(resource.id)}">${tr('registrationHelp')}</button>
       <button class="text-action" data-report="${attr(resource.id)}">${tr('reportIncorrect')}</button>
       <button class="text-action" data-save="${attr(resource.id)}" aria-pressed="${state.saved.has(resource.id)}">${state.saved.has(resource.id) ? `★ ${tr('savedAction')}` : `☆ ${tr('save')}`}</button>
-      ${state.mode === 'helper' && !options.compact ? `
-        <button class="text-action" data-add-plan="${attr(resource.id)}" aria-pressed="${inPlan}">${inPlan ? `✓ ${tr('inPlan')}` : `+ ${tr('selectPlan')}`}</button>
-        <button class="text-action" data-compare="${attr(resource.id)}" aria-pressed="${compared}">${compared ? '✓ ' : ''}${tr('compare')}</button>` : ''}
+      ${!options.compact ? `
+        <button class="text-action" data-add-plan="${attr(resource.id)}" aria-pressed="${inPlan}">${inPlan ? `✓ ${tr('inActionPlan')}` : `+ ${tr('addToActionPlan')}`}</button>
+        ${state.mode === 'helper' ? `<button class="text-action" data-compare="${attr(resource.id)}" aria-pressed="${compared}">${compared ? '✓ ' : ''}${tr('compare')}</button>` : ''}` : ''}
     </div>
   </article>`;
 }
@@ -882,13 +893,18 @@ function planConstraintValue(name) {
 
 function decisionPlanPanel(resources) {
   const plan = state.decisionPlan;
-  const title = state.mode === 'helper' ? tr('resourcePlan') : tr('buildActionPlan');
   return `<section class="decision-planner" aria-labelledby="decision-plan-title">
     <div class="section-head">
-      <div><span class="step-label">${tr('optional')}</span><h2 id="decision-plan-title">${title}</h2></div>
+      <div><span class="step-label">${tr('planConstraints')}</span><h2 id="decision-plan-title">${tr('buildActionPlan')}</h2></div>
     </div>
-    <p>${tr('actionPlanIntro')}</p>
+    <p>${tr('actionPlanPageIntro')}</p>
+    ${state.planStatus === 'generating' ? `<div class="loading-state" role="status"><span class="spinner" aria-hidden="true"></span><strong>${tr('planGenerating')}</strong></div>` : ''}
+    ${state.planStatus === 'missing' ? `<div class="error-state">${tr('planMissingResources')}</div>` : ''}
+    ${state.planStatus === 'failure' ? `<div class="error-state">${tr('planGenerationFailed')} <button class="ghost" data-retry-plan>${tr('retry')}</button></div>` : ''}
+    ${state.planStatus === 'conflict' ? `<div class="error-state">${tr('planScheduleConflict')}</div>` : ''}
     <form id="actionPlanForm" class="constraint-grid">
+      <label class="wide"><span>${tr('immediateNeeds')}</span><input name="immediateNeeds" value="${attr(planConstraintValue('immediateNeeds'))}" placeholder="${attr(tr('immediateNeedsPlaceholder'))}"></label>
+      <label class="wide"><span>${tr('longerTermNeeds')}</span><input name="longerTermNeeds" value="${attr(planConstraintValue('longerTermNeeds'))}" placeholder="${attr(tr('longerTermNeedsPlaceholder'))}"></label>
       <label><span>${tr('urgency')}</span><select name="urgency">
         <option value="immediate" ${planConstraintValue('urgency') === 'immediate' ? 'selected' : ''}>${tr('urgencyImmediate')}</option>
         <option value="today" ${planConstraintValue('urgency') === 'today' ? 'selected' : ''}>${tr('urgencyToday')}</option>
@@ -908,11 +924,12 @@ function decisionPlanPanel(resources) {
       <label class="wide"><span>${tr('physicalLimitations')}</span><input name="physicalLimitations" value="${attr(planConstraintValue('physicalLimitations'))}"></label>
       <label class="filter-check"><input type="checkbox" name="wheelchairAccessible" ${planConstraintValue('wheelchairAccessible') ? 'checked' : ''}><span>${tr('wheelchairAccessible')}</span></label>
       <label class="filter-check"><input type="checkbox" name="childcareNeeded" ${planConstraintValue('childcareNeeded') ? 'checked' : ''}><span>${tr('childcareNeeded')}</span></label>
-      <button class="primary wide" type="submit" ${resources.length ? '' : 'disabled'}>${tr('generatePlan')}</button>
+      <button class="primary wide" type="submit" ${resources.length && state.planStatus !== 'generating' ? '' : 'disabled'}>${plan ? tr('regeneratePlan') : tr('generatePlan')}</button>
     </form>
-    ${plan ? `<div class="generated-plan" aria-live="polite">
+    ${plan && ['completed', 'conflict'].includes(state.planStatus) ? `<div class="generated-plan" aria-live="polite">
       <h3>${tr('yourActionPlan')}</h3>
       <p>${esc(plan.explanation)}</p>
+      ${plan.documents?.length ? `<h3>${tr('documents')}</h3><ul>${plan.documents.map(document => `<li>${esc(document)}${plan.reusableDocuments?.includes(document) ? ` <strong>(${tr('reusableDocument')})</strong>` : ''}</li>`).join('')}</ul>` : ''}
       ${plan.steps.length ? `<ol>${plan.steps.map(step => `<li>
         <strong>${esc(step.title)}</strong>
         <p>${esc(step.action)}</p>
@@ -926,6 +943,44 @@ function decisionPlanPanel(resources) {
       <p class="privacy-notice">${tr('planNoGuarantee')}</p>
     </div>` : ''}
   </section>`;
+}
+
+function selectedActionPlanResources() {
+  return state.helperPlan.map(item => normalizeResource(resourceById(item.id) || item, state.lang));
+}
+
+function actionPlanSelection(resources) {
+  if (!resources.length) {
+    return `<section class="action-plan-empty">
+      <h2>${tr('planNoResourcesTitle')}</h2>
+      <p>${tr('planNoResourcesBody')}</p>
+      <button class="primary" data-page="find">${tr('navFind')}</button>
+    </section>`;
+  }
+  return `<section class="action-plan-selection" aria-labelledby="action-plan-selection-title">
+    <div class="section-head">
+      <div><span class="step-label">${tr('selectedResources', { count: resources.length })}</span><h2 id="action-plan-selection-title">${tr('planSelectedResources')}</h2></div>
+    </div>
+    <div class="action-plan-resource-list">${resources.map(resource => `<article>
+      <div><strong>${esc(resource.name)}</strong><p>${esc(resource.address || tr('onlineAvailable'))}</p></div>
+      <dl>
+        <dt>${tr('hours')}</dt><dd>${esc(resource.hours || tr('hoursNotPubliclyListed'))}</dd>
+        <dt>${tr('documents')}</dt><dd>${esc(resource.requiredDocuments.join('; ') || tr('nonePublished'))}</dd>
+      </dl>
+      <button class="text-action" data-add-plan="${attr(resource.id)}">${tr('removeFromActionPlan')}</button>
+    </article>`).join('')}</div>
+  </section>`;
+}
+
+function actionPlanPage() {
+  const resources = selectedActionPlanResources();
+  return `<main id="main" class="wrap section page action-plan-page">
+    <div class="page-head"><div><span class="eyebrow">${tr('actionPlanEyebrow')}</span><h1>${tr('buildActionPlan')}</h1><p>${tr('actionPlanPageIntro')}</p></div></div>
+    ${statusMessages()}
+    ${actionPlanSelection(resources)}
+    ${resources.length ? decisionPlanPanel(resources) : ''}
+    ${resources.length ? planPanel() : ''}
+  </main>`;
 }
 
 function findPage() {
@@ -958,7 +1013,6 @@ function findPage() {
       </section>
       ${state.mode === 'helper' && state.searched ? planPanel() : ''}
     </div>
-    ${state.searched ? decisionPlanPanel(resources) : ''}
   </main>`;
 }
 
@@ -984,7 +1038,31 @@ function planText() {
       item.questions ? `${tr('questionsToAsk')}: ${item.questions}` : '',
       tr('confirmOrganization'),
       ''
-    ].filter(Boolean))
+    ].filter(Boolean)),
+    ...(state.decisionPlan ? [
+      '',
+      tr('yourActionPlan'),
+      ...state.decisionPlan.steps.flatMap((step, index) => [
+        `${index + 1}. ${step.title}`,
+        step.action,
+        step.timing ? `${tr('timing')}: ${step.timing}` : '',
+        step.travel ? `${tr('travelEstimate')}: ${step.travel}` : '',
+        `${tr('whyThisOrder')}: ${step.reason}`,
+        `${tr('completionEstimate')}: ${step.completionConfidence.label} - ${step.completionConfidence.reason}`,
+        ''
+      ].filter(Boolean)),
+      ...(state.decisionPlan.documents?.length ? [
+        tr('documents'),
+        ...state.decisionPlan.documents.map(document => `- ${document}${state.decisionPlan.reusableDocuments?.includes(document) ? ` (${tr('reusableDocument')})` : ''}`)
+      ] : []),
+      ...(state.decisionPlan.tradeoffs?.length ? [
+        '',
+        tr('tradeoffs'),
+        ...state.decisionPlan.tradeoffs.map(item => `- ${item}`)
+      ] : []),
+      '',
+      tr('planNoGuarantee')
+    ] : [])
   ].join('\n');
 }
 
@@ -1046,6 +1124,7 @@ function nationwideCard(raw) {
     <div><h2>${esc(resource.name)}</h2></div>
     <p class="description">${esc(resource.serviceOffered || resource.description)}</p>
     <dl class="resource-meta">
+      <dt>${tr('nationwideAvailability')}</dt><dd>${esc(resource.nationwideAvailability)}</dd>
       <dt>${tr('whoItHelps')}</dt><dd>${esc(resource.whoItHelps || resource.eligibilitySummary)}</dd>
       <dt>${tr('eligibilitySummary')}</dt><dd>${esc(eligibilityLabel)}</dd>
       <dt>${tr('waysToApply')}</dt><dd>${esc(applicationMethods(resource.applicationMethods) || tr('confirmOrganization'))}</dd>
@@ -1533,12 +1612,20 @@ function render(options = {}) {
     find: findPage,
     nationwide: nationwidePage,
     eligibility: eligibilityPage,
+    actionPlan: actionPlanPage,
     registration: registrationPage,
     saved: savedPage,
     privacy: privacyPage
   }[state.page]?.() || homePage();
   app.innerHTML = `${header()}${page}${footer()}${chat()}${requirementsPanel()}${reportPanel()}${modeSelector()}`;
   if (options.focus) requestAnimationFrame(() => document.querySelector(options.focus)?.focus());
+}
+
+function setPageRoute(page, { replace = false } = {}) {
+  state.page = page;
+  const nextHash = hashForPage(page);
+  if (window.location.hash === nextHash) return;
+  window.history[replace ? 'replaceState' : 'pushState'](null, '', nextHash);
 }
 
 async function researchMissingSchedules(resources) {
@@ -1554,14 +1641,24 @@ async function researchMissingSchedules(resources) {
     .slice(0, 5);
   if (!candidates.length) return pending;
   const checkedResults = await Promise.allSettled(candidates.map(resource => verifyResourceSchedule(resource)));
-  const checked = checkedResults
-    .filter(result => result.status === 'fulfilled')
-    .map(result => result.value);
+  const checked = checkedResults.map((result, index) => {
+    if (result.status === 'fulfilled') return result.value;
+    const resource = candidates[index];
+    recordSearchDiagnostic('resource_verification_failed', {
+      resourceId: diagnosticFingerprint(resource.id),
+      code: result.reason?.code || result.reason?.name || 'RESOURCE_VERIFICATION_FAILED'
+    });
+    return {
+      ...resource,
+      scheduleVerificationStatus: 'verification_failed',
+      availabilityStatus: resource.weeklyHours ? resource.availabilityStatus : 'Schedule uncertain'
+    };
+  });
   const updates = new Map(checked.map(resource => [resource.id, resource]));
   return pending.map(resource => updates.get(resource.id) || resource);
 }
 
-async function enrichStoredEvidence(point, { key, location, quiet = false } = {}) {
+async function enrichStoredEvidence(point, { location } = {}) {
   const locationKey = `${Number(point.lat).toFixed(4)},${Number(point.lng).toFixed(4)}`;
   return enrichmentCoordinator.run(`stored:${locationKey}`, async () => {
     let updated = await geocodeResourceAddresses(state.storedResults, {
@@ -1593,9 +1690,6 @@ async function enrichStoredEvidence(point, { key, location, quiet = false } = {}
         .map(result => [String(result.value.id), result.value]));
       updated = updated.map(resource => replacements.get(String(resource.id)) || resource);
     }
-    if (key && state.activeSearchKey !== key) return updated;
-    state.storedResults = updated;
-    if (state.searched && !quiet) render();
     return updated;
   });
 }
@@ -1608,17 +1702,11 @@ async function performNearbySearch({
   cached,
   location,
   desired,
-  radius
+  radius,
+  request
 } = {}) {
-  if (state.activeSearchKey !== key) return state.liveResults;
-  state.errorKey = '';
-  state.errorText = '';
-  state.locationSuggestions = [];
-  state.noticeKey = '';
-  state.loading = true;
-  state.discoveryStatus = 'discovering';
+  if (!searchLifecycle.isCurrent(request)) return state.liveResults;
   recordSearchDiagnostic('search_started', { radius, desired });
-  if (!quiet) render();
   const freshCached = cached && !cached.stale && cached.resources.length ? cached : null;
   if (freshCached) {
     state.liveResults = mergeSearchResults([], freshCached.resources, desired);
@@ -1626,15 +1714,18 @@ async function performNearbySearch({
     if (!quiet) render();
   }
   if (state.offline) {
-    state.loading = false;
-    state.discoveryStatus = freshCached || staticMatches().length ? 'verified-results-available' : 'unavailable';
-    if (!freshCached && !staticMatches().length) state.errorKey = 'searchUnavailable';
+    const hasResults = Boolean(freshCached || staticMatches().length);
+    completeSearchState(state, {
+      hasResults,
+      errorKey: hasResults ? '' : 'searchUnavailable'
+    });
+    searchLifecycle.finish(request);
     if (!quiet) render();
     return state.liveResults;
   }
   try {
     const point = coordinates || await geocodeLocation(location);
-    if (state.activeSearchKey !== key) return state.liveResults;
+    if (!searchLifecycle.isCurrent(request)) return state.liveResults;
     state.coordinates = { lat: point.lat, lng: point.lng };
     state.situationConstraints = parseSituation(`${state.otherNeed} ${state.situation}`, {
       location: state.location,
@@ -1651,7 +1742,16 @@ async function performNearbySearch({
       state.liveResults = mergeSearchResults(state.liveResults, reusableCached.resources, desired);
       if (!quiet) render();
     }
-    void enrichStoredEvidence(point, { key, location, quiet });
+    void enrichStoredEvidence(point, { location }).then(updated => {
+      if (!searchLifecycle.isCurrent(request)) return;
+      state.storedResults = updated;
+      recordSearchDiagnostic('stored_evidence_enriched', { storedCount: updated.length });
+      if (state.searched && !quiet) render();
+    }).catch(error => {
+      recordSearchDiagnostic('stored_enrichment_failed', {
+        code: error?.code || error?.name || 'ENRICHMENT_FAILED'
+      });
+    });
     let rows = await fetchNearbyResources({
       lat: point.lat,
       lng: point.lng,
@@ -1663,46 +1763,51 @@ async function performNearbySearch({
     if (canonicalKey) updatedCache = writeCachedSearch(updatedCache, canonicalKey, rows);
     persist(STORAGE.cache, updatedCache);
     persist(STORAGE.searches, [...new Set([...safeArray(STORAGE.searches), location])].slice(-10));
-    if (state.activeSearchKey !== key) return rows;
+    if (!searchLifecycle.isCurrent(request)) return rows;
     state.liveResults = rows;
     state.discoveryStatus = rows.length || staticMatches().length ? 'verified-results-available' : 'no-results-yet';
     recordSearchDiagnostic('live_discovery_merged', { liveCount: rows.length });
     if (!quiet) render();
-    void enrichmentCoordinator.run(`hours:${key}`, async () => {
-      const checked = await researchMissingSchedules(rows);
+    void enrichmentCoordinator.run(`hours:${key}`, () => researchMissingSchedules(rows))
+      .then(checked => {
+      if (!searchLifecycle.isCurrent(request)) return checked;
       const complete = mergeSearchResults(state.liveResults, checked, desired);
       let checkedCache = writeCachedSearch(safeObject(STORAGE.cache), key, complete);
       if (canonicalKey) checkedCache = writeCachedSearch(checkedCache, canonicalKey, complete);
       persist(STORAGE.cache, checkedCache);
-      if (state.activeSearchKey !== key) return checked;
       state.liveResults = complete;
       recordSearchDiagnostic('verification_merge_completed', { verifiedCount: checked.length, total: complete.length });
       if (!quiet) render();
       return complete;
+    }).catch(error => {
+      recordSearchDiagnostic('verification_batch_failed', {
+        code: error?.code || error?.name || 'VERIFICATION_FAILED'
+      });
     });
   } catch (error) {
-    if (state.activeSearchKey === key) {
-      if (error.code === 'AMBIGUOUS_LOCATION') {
-        state.errorKey = 'locationAmbiguous';
+    if (searchLifecycle.isCurrent(request)) {
+      const hasResults = Boolean(staticMatches().length || state.liveResults.length);
+      const outcome = searchFailureOutcome(error, hasResults);
+      state.errorKey = outcome.errorKey;
+      state.noticeKey = outcome.noticeKey;
+      if (outcome.errorKey === 'locationAmbiguous') {
         state.locationSuggestions = Array.isArray(error.choices) ? error.choices : [];
-      } else if (error.code === 'LOCATION_NOT_FOUND') {
-        state.errorKey = 'locationNotFound';
-      } else {
-        state.errorKey = 'searchUnavailable';
       }
-      state.discoveryStatus = staticMatches().length || state.liveResults.length
-        ? 'verified-results-available'
-        : 'unavailable';
-      recordSearchDiagnostic('search_failed', { code: error.code || 'SEARCH_FAILED', message: error.message });
+      state.discoveryStatus = hasResults ? 'verified-results-available' : 'unavailable';
+      recordSearchDiagnostic(outcome.partial ? 'live_discovery_partial' : 'search_failed', {
+        code: error?.code || error?.name || 'SEARCH_FAILED',
+        usableResultCount: allResults().length
+      });
     }
   } finally {
-    if (state.activeSearchKey === key) {
-      state.loading = false;
-      if (state.discoveryStatus === 'discovering') {
-        state.discoveryStatus = state.liveResults.length || staticMatches().length
-          ? 'verified-results-available'
-          : 'no-results-yet';
-      }
+    if (searchLifecycle.isCurrent(request)) {
+      const hasResults = Boolean(state.liveResults.length || staticMatches().length);
+      completeSearchState(state, {
+        hasResults,
+        errorKey: state.errorKey,
+        noticeKey: state.noticeKey
+      });
+      searchLifecycle.finish(request);
       if (!quiet) render();
     }
   }
@@ -1726,9 +1831,15 @@ async function searchNearby({ coordinates = null, quiet = false } = {}) {
   });
   const cache = safeObject(STORAGE.cache);
   const cached = readCachedSearch(cache, key);
-  state.activeSearchKey = key;
+  const request = searchLifecycle.begin(key);
+  beginSearchState(state, {
+    key,
+    requestId: request.id,
+    clearResults: true
+  });
   recordSearchDiagnostic('search_normalized', { desired, radius });
-  return searchCoordinator.run(key, () => performNearbySearch({
+  if (!quiet) render();
+  return performNearbySearch({
     coordinates,
     quiet,
     key,
@@ -1736,8 +1847,9 @@ async function searchNearby({ coordinates = null, quiet = false } = {}) {
     cached,
     location,
     desired,
-    radius
-  }));
+    radius,
+    request
+  });
 }
 
 async function submitSearch(form) {
@@ -1749,6 +1861,9 @@ async function submitSearch(form) {
   state.unit = String(data.get('unit') || state.unit);
   state.radiusValue = Number(data.get('radius')) || 5;
   state.travelMode = String(data.get('travelMode') || 'walking');
+  state.searchCategories = state.category && !['all', 'other'].includes(state.category)
+    ? [state.category]
+    : [];
   state.query = searchNeed();
   state.coordinates = null;
   state.locationSuggestions = [];
@@ -1764,19 +1879,19 @@ async function submitSearch(form) {
   }
   applySituationFilters(`${state.otherNeed} ${state.situation}`);
   state.searched = true;
-  state.page = 'find';
+  setPageRoute('find');
   state.storedResults = sourceResources;
-  state.liveResults = [];
   state.visibleResults = 20;
   state.decisionPlan = null;
   persistShared();
-  render();
   void searchNearby();
 }
 
-function generateDecisionPlan(form) {
+async function generateDecisionPlan(form) {
   const data = new FormData(form);
   state.planConstraints = normalizePlanConstraints({
+    immediateNeeds: data.get('immediateNeeds'),
+    longerTermNeeds: data.get('longerTermNeeds'),
     urgency: data.get('urgency'),
     availableDays: data.get('availableDays'),
     availableTimes: data.get('availableTimes'),
@@ -1789,26 +1904,46 @@ function generateDecisionPlan(form) {
     childcareNeeded: data.has('childcareNeeded'),
     deadline: data.get('deadline')
   });
-  const selectedIds = new Set(state.helperPlan.map(item => item.id));
-  const candidates = allResults().filter(resource => !selectedIds.size || selectedIds.has(resource.id));
-  state.decisionPlan = buildDecisionPlan(candidates, state.planConstraints, {
-    mode: state.mode,
-    situationConstraints: state.situationConstraints
-  });
+  const candidates = selectedActionPlanResources();
+  if (!candidates.length) {
+    state.planStatus = 'missing';
+    state.decisionPlan = null;
+    render({ focus: '#decision-plan-title' });
+    return;
+  }
+  state.planStatus = 'generating';
+  state.planError = '';
+  state.decisionPlan = null;
+  render({ focus: '#decision-plan-title' });
+  await Promise.resolve();
+  try {
+    const plan = buildDecisionPlan(candidates, state.planConstraints, {
+      mode: state.mode,
+      situationConstraints: state.situationConstraints
+    });
+    state.decisionPlan = plan;
+    state.planStatus = plan.steps.length ? 'completed' : plan.excluded.length ? 'conflict' : 'missing';
+  } catch (error) {
+    state.decisionPlan = null;
+    state.planStatus = 'failure';
+    state.planError = error?.name || 'PLAN_GENERATION_FAILED';
+  }
   render({ focus: '#decision-plan-title' });
 }
 
 function addToPlan(id) {
-  const resource = resourceById(id);
-  if (!resource) return;
   if (state.helperPlan.some(item => item.id === id)) {
     state.helperPlan = removePlanResource(state.helperPlan, id);
   } else {
+    const resource = resourceById(id);
+    if (!resource) return;
     state.helperPlan = addPlanResource(state.helperPlan, {
       ...resource,
       directions: directionsUrl(resource, 'walking')
     });
   }
+  state.decisionPlan = null;
+  state.planStatus = state.helperPlan.length ? 'idle' : 'missing';
   persistHelper();
   render();
 }
@@ -1933,7 +2068,7 @@ async function sendChat(form) {
 app.addEventListener('submit', event => {
   event.preventDefault();
   if (event.target.matches('#searchForm')) submitSearch(event.target);
-  if (event.target.matches('#actionPlanForm')) generateDecisionPlan(event.target);
+  if (event.target.matches('#actionPlanForm')) void generateDecisionPlan(event.target);
   if (event.target.matches('#chatForm')) sendChat(event.target);
   if (event.target.matches('#reportForm')) processReport(event.target);
 });
@@ -1944,7 +2079,7 @@ app.addEventListener('click', async event => {
   if (target.matches('[data-mode]')) {
     switchMode(state, target.dataset.mode);
     state.modePromptOpen = false;
-    state.page = 'home';
+    setPageRoute('home');
     render({ focus: '#main' });
   }
   if (target.matches('[data-switch-mode]')) {
@@ -1956,7 +2091,7 @@ app.addEventListener('click', async event => {
     render({ focus: '[data-switch-mode]' });
   }
   if (target.matches('[data-page]')) {
-    state.page = target.dataset.page;
+    setPageRoute(target.dataset.page);
     state.errorKey = '';
     state.errorText = '';
     render({ focus: '#main' });
@@ -1978,7 +2113,7 @@ app.addEventListener('click', async event => {
       async position => {
         state.location = tr('useLocation');
         state.searched = Boolean(state.category);
-        state.page = state.searched ? 'find' : 'home';
+        setPageRoute(state.searched ? 'find' : 'home');
         state.storedResults = sourceResources;
         state.liveResults = [];
         persistShared();
@@ -2027,13 +2162,13 @@ app.addEventListener('click', async event => {
     state.eligibility.answers = {};
     state.eligibility.step = 0;
     state.eligibility.started = false;
-    state.page = 'eligibility';
+    setPageRoute('eligibility');
     render({ focus: '#main' });
   }
   if (target.matches('[data-registration]')) {
     state.selectedResourceId = target.dataset.registration;
     state.registrationStep = 0;
-    state.page = 'registration';
+    setPageRoute('registration');
     render({ focus: '#main' });
   }
   if (target.matches('[data-requirements]')) {
@@ -2070,6 +2205,7 @@ app.addEventListener('click', async event => {
     state.otherNeed = '';
     state.situation = state.helperIntake.situation || '';
     state.category = selectedCategories[0] || '';
+    state.searchCategories = [...selectedCategories];
     state.location = state.helperIntake.location || state.location;
     if (!state.category || !state.location) {
       state.errorKey = 'locationRequired';
@@ -2079,7 +2215,7 @@ app.addEventListener('click', async event => {
     applySituationFilters(`${state.situation} ${state.helperIntake.identification || ''} ${state.helperIntake.accessibility || ''}`);
     state.query = searchNeed();
     state.searched = true;
-    state.page = 'find';
+    setPageRoute('find');
     state.storedResults = sourceResources;
     state.liveResults = [];
     state.visibleResults = 20;
@@ -2096,15 +2232,21 @@ app.addEventListener('click', async event => {
   }
   if (target.matches('[data-remove-plan]')) {
     state.helperPlan = removePlanResource(state.helperPlan, target.dataset.removePlan);
+    state.decisionPlan = null;
+    state.planStatus = state.helperPlan.length ? 'idle' : 'missing';
     persistHelper();
     render();
   }
   if (target.matches('[data-clear-plan]')) {
-    const cleared = emptyPlan();
-    state.helperPlan = cleared.plan;
-    state.helperIntake = cleared.intake;
+    state.helperPlan = [];
+    state.decisionPlan = null;
+    state.planStatus = 'missing';
     persistHelper();
     render();
+  }
+  if (target.matches('[data-retry-plan]')) {
+    const form = document.querySelector('#actionPlanForm');
+    if (form) void generateDecisionPlan(form);
   }
   if (target.matches('[data-copy-plan]')) {
     try {
@@ -2146,11 +2288,11 @@ app.addEventListener('click', async event => {
   }
   if (target.matches('[data-retry-saved]')) {
     if (!state.location || !state.category) {
-      state.page = 'home';
+      setPageRoute('home');
       state.errorKey = 'locationRequired';
       render({ focus: '#locationInput' });
     } else {
-      state.page = 'find';
+      setPageRoute('find');
       state.searched = true;
       state.errorKey = '';
       render();
@@ -2373,9 +2515,18 @@ window.addEventListener('offline', () => {
   state.offline = true;
   render();
 });
+window.addEventListener('hashchange', () => {
+  const page = pageFromHash(window.location.hash);
+  if (page === state.page) return;
+  state.page = page;
+  state.errorKey = '';
+  state.errorText = '';
+  render({ focus: '#main' });
+});
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => navigator.serviceWorker.register('./service-worker.js').catch(() => {}));
 }
 
+if (!window.location.hash) setPageRoute('home', { replace: true });
 render();

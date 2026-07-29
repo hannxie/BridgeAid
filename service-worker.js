@@ -1,15 +1,15 @@
-const CACHE = 'bridgeaid-v12';
+const CACHE = 'bridgeaid-v13';
 const ASSETS = [
   './',
   './index.html',
-  './css/styles.css?v=12',
-  './js/app.js?v=12',
-  './js/localization.js?v=12',
-  './data/resources.js?v=12',
+  './css/styles.css?v=13',
+  './js/app.js?v=13',
+  './js/localization.js?v=13',
+  './data/resources.js?v=13',
   './manifest.webmanifest',
   './js/services/storage.js',
-  './js/services/resource-service.js?v=12',
-  './js/services/location-service.js?v=12',
+  './js/services/resource-service.js?v=13',
+  './js/services/location-service.js?v=13',
   './js/services/schedule-service.js',
   './js/services/eligibility-service.js',
   './js/services/registration-service.js',
@@ -19,12 +19,14 @@ const ASSETS = [
   './js/services/decision-plan-service.js',
   './js/services/situation-service.js',
   './js/services/eligibility-data-service.js',
-  './js/services/grounded-assistant.js?v=12',
-  './js/services/local-eligibility-service.js?v=12',
+  './js/services/grounded-assistant.js?v=13',
+  './js/services/local-eligibility-service.js?v=13',
   './js/services/correction-service.js',
   './js/services/schedule-verification-service.js',
   './js/services/places-enrichment-service.js',
-  './js/services/performance-service.js'
+  './js/services/performance-service.js',
+  './js/services/route-service.js',
+  './js/services/search-lifecycle-service.js'
 ];
 self.addEventListener('install', e => e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS))));
 self.addEventListener('activate', e => e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k))))));

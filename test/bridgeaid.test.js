@@ -119,8 +119,15 @@ import {
 import { registrationGuidance } from '../js/services/registration-service.js';
 import { categories, resources, nationwideResources } from '../data/resources.js';
 import { buildDecisionPlan, normalizePlanConstraints } from '../js/services/decision-plan-service.js';
+import {
+  createSearchLifecycle,
+  beginSearchState,
+  completeSearchState,
+  searchFailureOutcome
+} from '../js/services/search-lifecycle-service.js';
 import { parseSituation } from '../js/services/situation-service.js';
 import { eligibilityRecord, exportEligibilityCsv } from '../js/services/eligibility-data-service.js';
+import { hashForPage, isCurrentPage, pageFromHash } from '../js/services/route-service.js';
 
 class MemoryStorage {
   constructor() {
@@ -341,6 +348,66 @@ test('request coordination deduplicates concurrent external work', async () => {
   assert.equal(calls, 1);
   release('complete');
   assert.equal(await duplicate, 'complete');
+});
+
+test('request coordination releases failed work so a retry can run', async () => {
+  const coordinator = createRequestCoordinator();
+  await assert.rejects(
+    coordinator.run('retryable-search', async () => {
+      throw new Error('temporary failure');
+    }),
+    /temporary failure/
+  );
+  assert.equal(coordinator.size(), 0);
+  assert.equal(await coordinator.run('retryable-search', async () => 'recovered'), 'recovered');
+});
+
+test('every search begins with clean transient state and can recover after failure', () => {
+  const lifecycle = createSearchLifecycle();
+  const state = {
+    liveResults: [{ id: 'old' }],
+    errorKey: 'searchUnavailable',
+    errorText: 'old failure',
+    noticeKey: 'old notice',
+    loading: false,
+    discoveryStatus: 'unavailable'
+  };
+  const failed = lifecycle.begin('city-a');
+  beginSearchState(state, { key: failed.key, requestId: failed.id });
+  assert.equal(state.errorKey, '');
+  assert.equal(state.errorText, '');
+  assert.equal(state.loading, true);
+  assert.deepEqual(state.liveResults, []);
+  completeSearchState(state, { hasResults: false, errorKey: 'searchUnavailable' });
+  lifecycle.finish(failed);
+  const retry = lifecycle.begin('city-a');
+  beginSearchState(state, { key: retry.key, requestId: retry.id });
+  assert.equal(state.errorKey, '');
+  assert.equal(state.loading, true);
+  assert.equal(lifecycle.isCurrent(retry), true);
+});
+
+test('rapid location changes make only the newest search current', () => {
+  const lifecycle = createSearchLifecycle();
+  const cityA = lifecycle.begin('city-a');
+  const cityB = lifecycle.begin('city-b');
+  assert.equal(lifecycle.isCurrent(cityA), false);
+  assert.equal(lifecycle.finish(cityA), false);
+  assert.equal(lifecycle.isCurrent(cityB), true);
+  assert.equal(lifecycle.finish(cityB), true);
+});
+
+test('live discovery failure preserves verified results and reserves Retry for total failure', () => {
+  assert.deepEqual(searchFailureOutcome(new Error('overpass unavailable'), true), {
+    errorKey: '',
+    noticeKey: 'searchPartialResults',
+    partial: true
+  });
+  assert.deepEqual(searchFailureOutcome(new Error('overpass unavailable'), false), {
+    errorKey: 'searchUnavailable',
+    noticeKey: '',
+    partial: false
+  });
 });
 
 test('stored-first responses return before background enrichment and record latency', async () => {
@@ -862,6 +929,31 @@ test('helper plan supports add, status, notes, provider questions, remove, and c
   assert.deepEqual(clearPlan(), { plan: [], intake: {} });
 });
 
+test('helper plan snapshots retain the facts needed after navigation or refresh', () => {
+  const [snapshot] = addPlanResource([], {
+    id: 'clinic',
+    name: 'Community Clinic',
+    category: 'health',
+    services: ['health'],
+    address: '100 Main St',
+    distance: 1.2,
+    hours: 'Monday 9 a.m.-3 p.m.',
+    weeklyHours: { monday: [{ open: '09:00', close: '15:00' }] },
+    hoursLastVerified: '2026-07-28',
+    applicationMethods: ['online', 'phone'],
+    registrationUrl: 'https://official.example/apply',
+    appointmentOnly: true,
+    accessibility: ['Wheelchair accessible'],
+    requiredDocuments: ['Photo ID']
+  });
+  assert.equal(snapshot.address, '100 Main St');
+  assert.equal(snapshot.distance, 1.2);
+  assert.equal(snapshot.weeklyHours.monday[0].open, '09:00');
+  assert.deepEqual(snapshot.applicationMethods, ['online', 'phone']);
+  assert.equal(snapshot.appointmentOnly, true);
+  assert.deepEqual(snapshot.requiredDocuments, ['Photo ID']);
+});
+
 test('assistant routes to modular agents and respects mode limits', () => {
   assert.equal(detectIntent('Am I eligible?'), 'eligibility');
   const answer = routeAssistantRequest({ question: 'find food', mode: 'self', resources: [{}, {}, {}, {}] });
@@ -1019,6 +1111,95 @@ test('decision planning respects distance, budget, accessibility, and reusable d
   assert.deepEqual(plan.excluded.map(item => item.resourceId).sort(), ['far', 'unknown-access']);
   assert.match(plan.explanation, /No step guarantees/);
   assert.equal(normalizePlanConstraints({ maxDistance: -1 }).maxDistance, 10);
+});
+
+test('decision planning uses verified schedules, appointment rules, urgency, and online-first ordering', () => {
+  const scheduleBase = {
+    category: 'benefits',
+    services: ['benefits'],
+    lastVerified: '2026-07-28',
+    hoursLastVerified: '2026-07-28',
+    verificationPeriodDays: 90,
+    requiredDocuments: [],
+    accessibility: [],
+    weeklyHours: { monday: [{ open: '09:00', close: '12:00' }] }
+  };
+  const plan = buildDecisionPlan([
+    {
+      ...scheduleBase,
+      id: 'online-benefits',
+      name: 'Benefits Application',
+      applicationMethods: ['online'],
+      registrationUrl: 'https://official.example/apply'
+    },
+    {
+      ...scheduleBase,
+      id: 'urgent-food',
+      name: 'Emergency Food Pantry',
+      category: 'food',
+      services: ['food'],
+      applicationMethods: ['inPerson'],
+      address: '1 Main St',
+      distance: 1
+    },
+    {
+      ...scheduleBase,
+      id: 'appointment-clinic',
+      name: 'Appointment Clinic',
+      category: 'health',
+      services: ['health'],
+      applicationMethods: ['phone'],
+      phone: '206-555-0100',
+      appointmentOnly: true,
+      address: '2 Main St',
+      distance: 2
+    }
+  ], {
+    urgency: 'immediate',
+    immediateNeeds: 'emergency food',
+    availableDays: 'Monday',
+    availableTimes: '9 a.m.-11 a.m.',
+    transportation: 'walking',
+    maxDistance: 5
+  }, { now: new Date('2026-07-27T12:00:00Z') });
+  const resourceSteps = plan.steps.filter(step => step.resourceId);
+  assert.equal(resourceSteps[0].resourceId, 'urgent-food');
+  assert.match(resourceSteps[0].reason, /immediate need/);
+  assert.equal(resourceSteps.find(step => step.resourceId === 'appointment-clinic').type, 'phone');
+  assert.equal(resourceSteps.find(step => step.resourceId === 'online-benefits').type, 'online');
+
+  const conflict = buildDecisionPlan([{
+    ...scheduleBase,
+    id: 'monday-only',
+    name: 'Monday Only',
+    applicationMethods: ['inPerson']
+  }], {
+    availableDays: 'Tuesday',
+    transportation: 'walking',
+    maxDistance: 5
+  }, { now: new Date('2026-07-27T12:00:00Z') });
+  assert.equal(conflict.steps.length, 0);
+  assert.match(conflict.excluded[0].reasons.join(' '), /Tuesday/i);
+});
+
+test('page routes survive direct, refreshed, and nested Action Plan URLs', () => {
+  assert.equal(hashForPage('actionPlan'), '#/action-plan');
+  assert.equal(pageFromHash('#/action-plan'), 'actionPlan');
+  assert.equal(pageFromHash('#/action-plan/review'), 'actionPlan');
+  assert.equal(pageFromHash('#action-plan?source=saved'), 'actionPlan');
+  assert.equal(pageFromHash('#/unknown'), 'home');
+  assert.equal(isCurrentPage('actionPlan', 'actionPlan'), true);
+  assert.equal(isCurrentPage('find', 'actionPlan'), false);
+});
+
+test('active navigation renders an accessible non-color-only current-page state', async () => {
+  const appSource = await readFile(new URL('../js/app.js', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../css/styles.css', import.meta.url), 'utf8');
+  assert.match(appSource, /aria-current="page"/);
+  assert.match(appSource, /isCurrentPage\(state\.page, page\)/);
+  assert.match(css, /\.nav-links button\[aria-current="page"\]/);
+  assert.match(css, /box-shadow:\s*inset 0 -3px 0/);
+  assert.match(css, /\.nav-links button\[aria-current="page"\]::after/);
 });
 
 test('critical UI copy and privacy constraints are present', async () => {
@@ -1377,7 +1558,7 @@ test('eligibility fallback uses the exact required disclosure in the interface',
 });
 
 test('nationwide online resources are separated from local results and carry actionable details', () => {
-  assert.ok(nationwideResources.length >= 20);
+  assert.ok(nationwideResources.length >= 40);
   assert.ok(nationwideResources.every(resource => resource.scope === 'nationwide-online'));
   assert.ok(nationwideResources.every(resource => !resource.requiresLocalProvider));
   assert.ok(nationwideResources.every(resource => resource.applicationSteps?.length >= 3));
@@ -1385,10 +1566,16 @@ test('nationwide online resources are separated from local results and carry act
   assert.ok(nationwideResources.every(resource => resource.lastVerified));
   assert.ok(nationwideResources.every(resource => resource.eligibilitySourceUrl?.startsWith('https://')));
   assert.ok(nationwideResources.every(resource => resource.applicationLinks?.some(link => link.url?.startsWith('https://'))));
+  assert.ok(nationwideResources.every(resource => resource.nationwideAvailability));
+  assert.ok(nationwideResources.every(resource => resource.eligibilitySummary));
+  assert.ok(nationwideResources.every(resource => Array.isArray(resource.requiredDocuments)));
+  assert.ok(nationwideResources.every(resource => resource.applicationLinks.every(link => validateRegistrationLink(link.url).valid)));
   assert.ok(nationwideResources.filter(resource => resource.eligibilityStatus === 'structured').length >= 8);
   assert.ok(resources.filter(resource => resource.scope === 'location').every(resource => !resource.onlineOnly));
   assert.ok(resources.some(resource => resource.scope === 'provider-directory'));
-  assert.ok(nationwideResources.some(resource => resource.category === 'education'));
+  for (const category of ['education', 'jobs', 'legal', 'health', 'mental', 'benefits', 'shelter', 'food', 'veteran', 'disability', 'immigration', 'family', 'internet']) {
+    assert.ok(nationwideResources.some(resource => resource.category === category || resource.services.includes(category)), category);
+  }
 });
 
 test('verified food programs include distribution schedules and short re-verification periods', () => {

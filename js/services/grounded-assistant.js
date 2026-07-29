@@ -1,6 +1,6 @@
 import { detectMessageLanguage, requestedLanguage } from '../localization.js';
-import { normalizeResource, rankResources } from './resource-service.js?v=12';
-import { localProgramForResource } from './local-eligibility-service.js?v=12';
+import { normalizeResource, rankResources } from './resource-service.js?v=13';
+import { localProgramForResource } from './local-eligibility-service.js?v=13';
 import { resourceScheduleState } from './schedule-service.js';
 
 const CATEGORY_TERMS = {

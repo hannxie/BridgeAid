@@ -1,5 +1,5 @@
 import { evaluateEligibility } from './eligibility-service.js';
-import { normalizeResource } from './resource-service.js?v=12';
+import { normalizeResource } from './resource-service.js?v=13';
 
 function locationTokens(value) {
   return String(value || '')

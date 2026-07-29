@@ -120,10 +120,28 @@ summary:focus-visible {
 }
 
 .nav-links button {
+    position: relative;
     border: 0;
     background: none;
     padding: 10px 12px;
     font-weight: 750
+}
+
+.nav-links button[aria-current="page"] {
+    border-radius: 10px;
+    background: var(--soft);
+    box-shadow: inset 0 -3px 0 var(--teal)
+}
+
+.nav-links button[aria-current="page"]::after {
+    content: "";
+    position: absolute;
+    right: 9px;
+    bottom: 5px;
+    left: 9px;
+    height: 2px;
+    border-radius: 2px;
+    background: currentColor
 }
 
 .nav-actions {
@@ -850,6 +868,67 @@ footer small {
     margin: 7px 0 0
 }
 
+.action-plan-page {
+    display: grid;
+    gap: 22px
+}
+
+.action-plan-page .page-head,
+.action-plan-page .decision-planner {
+    margin: 0
+}
+
+.action-plan-empty,
+.action-plan-selection {
+    border: 1px solid var(--line);
+    border-radius: 20px;
+    background: var(--white);
+    padding: 22px;
+    box-shadow: 0 6px 20px rgba(18, 59, 104, .06)
+}
+
+.action-plan-resource-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px
+}
+
+.action-plan-resource-list article {
+    display: grid;
+    gap: 10px;
+    min-width: 0;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: var(--soft);
+    padding: 16px
+}
+
+.action-plan-resource-list p,
+.action-plan-resource-list dl {
+    margin: 4px 0 0
+}
+
+.action-plan-resource-list dl {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 5px 10px
+}
+
+.action-plan-resource-list dt {
+    font-weight: 800
+}
+
+.action-plan-resource-list dd {
+    min-width: 0;
+    margin: 0;
+    overflow-wrap: anywhere
+}
+
+.action-plan-page .plan-panel {
+    position: static;
+    width: 100%
+}
+
 @media(max-width:760px) {
     .constraint-grid {
         grid-template-columns: 1fr
@@ -861,6 +940,10 @@ footer small {
 
     .decision-planner {
         padding: 17px
+    }
+
+    .action-plan-resource-list {
+        grid-template-columns: 1fr
     }
 }
 
@@ -1693,12 +1776,21 @@ textarea:focus-visible {
         display: none !important
     }
 
+    .action-plan-selection,
+    .decision-planner form,
+    .decision-planner > p,
+    .decision-planner > .section-head,
+    .action-plan-page > .page-head {
+        display: none !important
+    }
+
     .results-layout,
     .helper-layout {
         display: block
     }
 
-    .plan-panel {
+    .plan-panel,
+    .decision-planner {
         position: static;
         border: 0;
         box-shadow: none

@@ -152,6 +152,7 @@ export function normalizeResource(resource, language = 'en') {
     applicationSourceUrl: resource.applicationSourceUrl || '',
     applicationLastVerified: resource.applicationLastVerified || '',
     serviceOffered: textFor(resource.serviceOffered || resource.description, language),
+    nationwideAvailability: textFor(resource.nationwideAvailability, language),
     whoItHelps: textFor(resource.whoItHelps || resource.eligibilitySummary || resource.eligibility, language),
     officialDomains: Array.isArray(resource.officialDomains) ? resource.officialDomains : [],
     freeStatus: resource.freeStatus || 'Confirm with organization',
