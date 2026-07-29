@@ -1,3 +1,5 @@
+import { applyNationwideEligibilityResearch } from './nationwide-eligibility-research.js';
+
 export const categories = [
   { id: 'all', icon: '✦', label: { en: 'All Services', zh: '全部服务', es: 'Todos los servicios' }, query: 'community assistance center' },
   { id: 'food', icon: '🍎', label: { en: 'Food', zh: '食品援助', es: 'Alimentos' }, query: 'food pantry soup kitchen free meals' },
@@ -2005,7 +2007,9 @@ export const resources = resourceRecords.map(resource => {
     verified: VERIFIED,
     verificationPeriodDays: 90
   };
-});
+}).map(resource => resource.scope === 'location'
+  ? resource
+  : applyNationwideEligibilityResearch(resource));
 
 export const nationwideResources = resources.filter(resource => resource.scope === 'nationwide-online');
 

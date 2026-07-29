@@ -17,6 +17,10 @@ problems combined:
   request instance, allowing an older request to settle newer UI state.
 - Situation-derived filters and helper-selected categories could leak into a
   later manual search.
+- Self mode submitted a form, helper mode used an unrelated button handler, and
+  GPS partially mutated state before calling discovery. Those three entry paths
+  disagreed about validation, categories, coordinates, persistence, and
+  transient-result reset.
 
 ## Repair invariants
 
@@ -32,10 +36,17 @@ Diagnostics record a request ID, category, result count, failure code, and a
 one-way search fingerprint. They do not record the raw location, situation text,
 or error message.
 
+`local-search-workflow.js` now normalizes and validates every self, helper,
+autocomplete, and GPS request before applying the same state transition. UI
+handlers only collect mode-specific inputs; they no longer implement their own
+search behavior. Exact coordinates stay in memory and are not passed to browser
+storage.
+
 ## Regression coverage
 
-Automated coverage verifies fresh transient state, retry after failure, newest
-request ownership during rapid changes, and partial-versus-total failure
-outcomes. Browser QA covers repeated same-location searches, category changes,
+Automated coverage verifies self/helper parity, missing-field behavior, GPS
+handling, fresh transient state, retry after failure, newest request ownership
+during rapid changes, and partial-versus-total failure outcomes. Browser QA
+covers both modes, repeated same-location searches, category changes,
 navigation away and back, enabled submission after completion, and desktop and
 mobile layouts.

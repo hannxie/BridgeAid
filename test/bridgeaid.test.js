@@ -118,16 +118,28 @@ import {
 } from '../js/services/performance-service.js';
 import { registrationGuidance } from '../js/services/registration-service.js';
 import { categories, resources, nationwideResources } from '../data/resources.js';
-import { buildDecisionPlan, normalizePlanConstraints } from '../js/services/decision-plan-service.js';
 import {
   createSearchLifecycle,
   beginSearchState,
   completeSearchState,
   searchFailureOutcome
 } from '../js/services/search-lifecycle-service.js';
+import {
+  normalizeLocalSearchRequest,
+  applyLocalSearchRequest
+} from '../js/services/local-search-workflow.js';
 import { parseSituation } from '../js/services/situation-service.js';
 import { eligibilityRecord, exportEligibilityCsv } from '../js/services/eligibility-data-service.js';
 import { hashForPage, isCurrentPage, pageFromHash } from '../js/services/route-service.js';
+import {
+  conditionalEligibilityQuestions,
+  evaluateNationwideProgram,
+  matchNationwidePrograms
+} from '../js/services/nationwide-eligibility-service.js';
+import {
+  NATIONWIDE_ELIGIBILITY_PROFILES,
+  nationwideEligibilityReviewQueue
+} from '../data/nationwide-eligibility-research.js';
 
 class MemoryStorage {
   constructor() {
@@ -397,6 +409,83 @@ test('rapid location changes make only the newest search current', () => {
   assert.equal(lifecycle.finish(cityB), true);
 });
 
+test('self and helper searches normalize into the same local-search request shape', () => {
+  const self = normalizeLocalSearchRequest({
+    mode: 'self',
+    category: 'food',
+    location: '98101',
+    radiusValue: 5,
+    unit: 'mi',
+    travelMode: 'walking',
+    situation: 'food tonight'
+  });
+  const helper = normalizeLocalSearchRequest({
+    mode: 'helper',
+    categories: ['food'],
+    location: '98101',
+    radiusValue: 5,
+    unit: 'mi',
+    travelMode: 'walking',
+    situation: 'food tonight'
+  });
+  assert.equal(self.ok, true);
+  assert.equal(helper.ok, true);
+  assert.deepEqual(
+    { ...self.request, mode: 'shared' },
+    { ...helper.request, mode: 'shared' }
+  );
+});
+
+test('local-search workflow validates required fields and supports GPS without storing coordinates elsewhere', () => {
+  assert.deepEqual(
+    normalizeLocalSearchRequest({ mode: 'self', category: '', location: '98101' }),
+    { ok: false, errorKey: 'locationRequired', focus: '#needSelect' }
+  );
+  assert.deepEqual(
+    normalizeLocalSearchRequest({ mode: 'helper', categories: ['food'], location: '' }),
+    { ok: false, errorKey: 'locationRequired', focus: '#helperLocationInput' }
+  );
+  const gps = normalizeLocalSearchRequest({
+    mode: 'self',
+    category: 'food',
+    coordinates: { lat: 47.61, lng: -122.33 }
+  }, { gpsLabel: 'Current location' });
+  assert.equal(gps.ok, true);
+  assert.equal(gps.request.location, 'Current location');
+  assert.deepEqual(gps.request.coordinates, { lat: 47.61, lng: -122.33 });
+});
+
+test('applying a local-search request resets transient results and parses shared context', () => {
+  const state = {
+    liveResults: [{ id: 'old' }],
+    storedResults: [],
+    locationSuggestions: ['old'],
+    errorKey: 'searchUnavailable',
+    errorText: 'old',
+    noticeKey: 'old',
+    visibleResults: 99,
+    searched: false
+  };
+  const normalized = normalizeLocalSearchRequest({
+    mode: 'helper',
+    categories: ['food', 'shelter'],
+    location: 'Seattle, WA',
+    situation: 'tonight',
+    context: 'no identification'
+  });
+  applyLocalSearchRequest(state, normalized.request, {
+    parseSituation,
+    sourceResources: [{ id: 'stored' }]
+  });
+  assert.deepEqual(state.searchCategories, ['food', 'shelter']);
+  assert.equal(state.category, 'food');
+  assert.equal(state.searched, true);
+  assert.equal(state.liveResults.length, 0);
+  assert.equal(state.visibleResults, 20);
+  assert.equal(state.errorKey, '');
+  assert.equal(state.situationConstraints.noId, true);
+});
+
 test('live discovery failure preserves verified results and reserves Retry for total failure', () => {
   assert.deepEqual(searchFailureOutcome(new Error('overpass unavailable'), true), {
     errorKey: '',
@@ -664,6 +753,70 @@ test('ambiguous geocoding asks for clarification', async () => {
     { lat: '2', lon: '2', display_name: 'Springfield B', importance: .49 }
   ] });
   await assert.rejects(() => geocodeLocation('Springfield', ambiguous), error => error.code === 'AMBIGUOUS_LOCATION');
+});
+
+test('every national resource has reviewed eligibility metadata and an official source', () => {
+  const national = resources.filter(resource => resource.scope !== 'location');
+  assert.equal(national.length, 52);
+  assert.equal(Object.keys(NATIONWIDE_ELIGIBILITY_PROFILES).length, national.length);
+  for (const resource of national) {
+    assert.ok(resource.eligibilityType, resource.id);
+    assert.ok(Array.isArray(resource.eligibilityRules), resource.id);
+    assert.ok(Array.isArray(resource.eligibilityQuestions), resource.id);
+    assert.ok(resource.officialSourceName, resource.id);
+    assert.match(resource.eligibilitySourceUrl, /^https:\/\//, resource.id);
+    assert.equal(resource.lastEligibilityVerified, '2026-07-29', resource.id);
+    assert.ok(['high', 'medium', 'low'].includes(resource.eligibilityConfidence), resource.id);
+    assert.equal(typeof resource.stateVariation, 'boolean', resource.id);
+    assert.equal(typeof resource.requiresOfficialConfirmation, 'boolean', resource.id);
+    assert.equal(typeof resource.manualReview, 'boolean', resource.id);
+  }
+});
+
+test('conditional nationwide quiz asks only questions relevant to selected needs', () => {
+  const foodQuestions = conditionalEligibilityQuestions(resources, { needs: ['food'] }).map(question => question.id);
+  const jobsQuestions = conditionalEligibilityQuestions(resources, { needs: ['jobs'] }).map(question => question.id);
+  assert.ok(foodQuestions.includes('pregnancyOrYoungChild'));
+  assert.equal(foodQuestions.includes('medicareCoverage'), false);
+  assert.ok(jobsQuestions.includes('employmentStatus'));
+  assert.equal(jobsQuestions.includes('pregnancyOrYoungChild'), false);
+});
+
+test('nationwide matcher uses cautious likely, possible, more-information, and unlikely labels', () => {
+  const marketplace = resources.find(resource => resource.id === 'healthcare-marketplace-application');
+  const possible = evaluateNationwideProgram(marketplace, {
+    usResident: 'yes',
+    citizenshipStatus: 'citizen'
+  });
+  assert.equal(possible.label, 'Possible match');
+  const likely = evaluateNationwideProgram(marketplace, {
+    usResident: 'yes',
+    citizenshipStatus: 'citizen',
+    incarcerated: 'no',
+    medicareCoverage: 'no'
+  });
+  assert.equal(likely.label, 'Likely match');
+  const unlikely = evaluateNationwideProgram(marketplace, {
+    usResident: 'yes',
+    citizenshipStatus: 'citizen',
+    incarcerated: 'yes',
+    medicareCoverage: 'no'
+  });
+  assert.equal(unlikely.label, 'Unlikely match');
+  const directoryResult = evaluateNationwideProgram(
+    resources.find(resource => resource.id === 'findhelp'),
+    { state: 'WA' }
+  );
+  assert.equal(directoryResult.label, 'More information needed');
+  const matched = matchNationwidePrograms(resources, { needs: ['health'] });
+  assert.ok(matched.some(result => result.resource.id === 'healthcare-marketplace-application'));
+});
+
+test('ambiguous national rules are exposed in the manual eligibility review queue', () => {
+  const queue = nationwideEligibilityReviewQueue(resources);
+  assert.ok(queue.some(item => item.resourceId === 'ssa-ssi-application-request'));
+  assert.ok(queue.some(item => item.resourceId === 'fema-disaster-assistance'));
+  assert.equal(queue.some(item => item.resourceId === '211'), false);
 });
 
 test('situation text extracts exact local time and ranks confirmed food availability first', () => {
@@ -1066,130 +1219,15 @@ test('eligibility records are stored per organization and program and export cle
   assert.match(csv, /"U\.S\. Department of Labor","Job Corps"/);
 });
 
-test('decision planning respects distance, budget, accessibility, and reusable documents', () => {
-  const base = {
-    category: 'food',
-    services: ['food'],
-    lastVerified: '2026-07-28',
-    verificationPeriodDays: 90,
-    applicationMethods: ['inPerson'],
-    requiredDocuments: ['Proof of address'],
-    weeklyHours: {
-      monday: [{ open: '00:00', close: '24:00' }],
-      tuesday: [{ open: '00:00', close: '24:00' }],
-      wednesday: [{ open: '00:00', close: '24:00' }],
-      thursday: [{ open: '00:00', close: '24:00' }],
-      friday: [{ open: '00:00', close: '24:00' }],
-      saturday: [{ open: '00:00', close: '24:00' }],
-      sunday: [{ open: '00:00', close: '24:00' }]
-    }
-  };
-  const plan = buildDecisionPlan([
-    { ...base, id: 'near', name: 'Near Pantry', distance: 1, accessibility: ['Wheelchair accessible'] },
-    { ...base, id: 'far', name: 'Far Pantry', distance: 12, accessibility: ['Wheelchair accessible'] },
-    { ...base, id: 'unknown-access', name: 'Unknown Access', distance: 2, accessibility: [] }
-  ], {
-    transportation: 'walking',
-    maxDistance: 5,
-    walkingLimit: 3,
-    transportationBudget: 0,
-    wheelchairAccessible: true
-  }, { now: new Date('2026-07-28T12:00:00Z') });
-  assert.ok(plan.steps.some(step => step.type === 'documents'));
-  assert.ok(plan.steps.some(step => step.resourceId === 'near'));
-  assert.equal(plan.mode, 'self');
-  assert.equal(plan.steps.at(-1).type, 'documents');
-  const helperPlan = buildDecisionPlan([
-    { ...base, id: 'near', name: 'Near Pantry', phone: '206-555-0100', distance: 1, accessibility: ['Wheelchair accessible'] }
-  ], {
-    transportation: 'walking',
-    maxDistance: 5
-  }, { now: new Date('2026-07-28T12:00:00Z'), mode: 'helper' });
-  assert.equal(helperPlan.steps[0].type, 'documents');
-  assert.equal(helperPlan.steps[1].type, 'phone');
-  assert.match(helperPlan.explanation, /provider confirmation calls/);
-  assert.deepEqual(plan.excluded.map(item => item.resourceId).sort(), ['far', 'unknown-access']);
-  assert.match(plan.explanation, /No step guarantees/);
-  assert.equal(normalizePlanConstraints({ maxDistance: -1 }).maxDistance, 10);
-});
-
-test('decision planning uses verified schedules, appointment rules, urgency, and online-first ordering', () => {
-  const scheduleBase = {
-    category: 'benefits',
-    services: ['benefits'],
-    lastVerified: '2026-07-28',
-    hoursLastVerified: '2026-07-28',
-    verificationPeriodDays: 90,
-    requiredDocuments: [],
-    accessibility: [],
-    weeklyHours: { monday: [{ open: '09:00', close: '12:00' }] }
-  };
-  const plan = buildDecisionPlan([
-    {
-      ...scheduleBase,
-      id: 'online-benefits',
-      name: 'Benefits Application',
-      applicationMethods: ['online'],
-      registrationUrl: 'https://official.example/apply'
-    },
-    {
-      ...scheduleBase,
-      id: 'urgent-food',
-      name: 'Emergency Food Pantry',
-      category: 'food',
-      services: ['food'],
-      applicationMethods: ['inPerson'],
-      address: '1 Main St',
-      distance: 1
-    },
-    {
-      ...scheduleBase,
-      id: 'appointment-clinic',
-      name: 'Appointment Clinic',
-      category: 'health',
-      services: ['health'],
-      applicationMethods: ['phone'],
-      phone: '206-555-0100',
-      appointmentOnly: true,
-      address: '2 Main St',
-      distance: 2
-    }
-  ], {
-    urgency: 'immediate',
-    immediateNeeds: 'emergency food',
-    availableDays: 'Monday',
-    availableTimes: '9 a.m.-11 a.m.',
-    transportation: 'walking',
-    maxDistance: 5
-  }, { now: new Date('2026-07-27T12:00:00Z') });
-  const resourceSteps = plan.steps.filter(step => step.resourceId);
-  assert.equal(resourceSteps[0].resourceId, 'urgent-food');
-  assert.match(resourceSteps[0].reason, /immediate need/);
-  assert.equal(resourceSteps.find(step => step.resourceId === 'appointment-clinic').type, 'phone');
-  assert.equal(resourceSteps.find(step => step.resourceId === 'online-benefits').type, 'online');
-
-  const conflict = buildDecisionPlan([{
-    ...scheduleBase,
-    id: 'monday-only',
-    name: 'Monday Only',
-    applicationMethods: ['inPerson']
-  }], {
-    availableDays: 'Tuesday',
-    transportation: 'walking',
-    maxDistance: 5
-  }, { now: new Date('2026-07-27T12:00:00Z') });
-  assert.equal(conflict.steps.length, 0);
-  assert.match(conflict.excluded[0].reasons.join(' '), /Tuesday/i);
-});
-
-test('page routes survive direct, refreshed, and nested Action Plan URLs', () => {
-  assert.equal(hashForPage('actionPlan'), '#/action-plan');
-  assert.equal(pageFromHash('#/action-plan'), 'actionPlan');
-  assert.equal(pageFromHash('#/action-plan/review'), 'actionPlan');
-  assert.equal(pageFromHash('#action-plan?source=saved'), 'actionPlan');
+test('page routes keep Local Help and Nationwide Help stable and retire Action Plan URLs', () => {
+  assert.equal(hashForPage('find'), '#/find-help');
+  assert.equal(hashForPage('nationwide'), '#/nationwide');
+  assert.equal(pageFromHash('#/find-help/results'), 'find');
+  assert.equal(pageFromHash('#/nationwide/quiz'), 'nationwide');
+  assert.equal(pageFromHash('#/action-plan'), 'home');
   assert.equal(pageFromHash('#/unknown'), 'home');
-  assert.equal(isCurrentPage('actionPlan', 'actionPlan'), true);
-  assert.equal(isCurrentPage('find', 'actionPlan'), false);
+  assert.equal(isCurrentPage('find', 'find'), true);
+  assert.equal(isCurrentPage('find', 'nationwide'), false);
 });
 
 test('active navigation renders an accessible non-color-only current-page state', async () => {
@@ -1200,6 +1238,11 @@ test('active navigation renders an accessible non-color-only current-page state'
   assert.match(css, /\.nav-links button\[aria-current="page"\]/);
   assert.match(css, /box-shadow:\s*inset 0 -3px 0/);
   assert.match(css, /\.nav-links button\[aria-current="page"\]::after/);
+  const modeHandler = appSource.slice(
+    appSource.indexOf("if (target.matches('[data-mode]'))"),
+    appSource.indexOf("if (target.matches('[data-switch-mode]'))")
+  );
+  assert.doesNotMatch(modeHandler, /setPageRoute\('home'\)/);
 });
 
 test('critical UI copy and privacy constraints are present', async () => {
@@ -1209,6 +1252,23 @@ test('critical UI copy and privacy constraints are present', async () => {
   assert.match(locale, /Help someone find support\./);
   assert.match(locale, /Only enter information you have permission to use/);
   assert.doesNotMatch(locale, /Social Security number["']?\s*[:=]\s*['"]/i);
+});
+
+test('nationwide quiz replaces the retired plan without persisting private answers', async () => {
+  const [appSource, locale, worker] = await Promise.all([
+    readFile(new URL('../js/app.js', import.meta.url), 'utf8'),
+    readFile(new URL('../js/localization.js', import.meta.url), 'utf8'),
+    readFile(new URL('../service-worker.js', import.meta.url), 'utf8')
+  ]);
+  assert.match(locale, /nationwideTitle: 'Nationwide Help'/);
+  assert.doesNotMatch(locale, /Nationwide Online Resources/);
+  assert.match(appSource, /Find Programs for Me/);
+  assert.match(appSource, /Clear my answers/);
+  assert.match(appSource, /conditionalEligibilityQuestions[\s\S]+?slice\(0, 8\)/);
+  assert.match(appSource, /Official eligibility source/);
+  assert.doesNotMatch(appSource, /persist\([^,\n]+,\s*state\.nationwideQuiz/);
+  assert.doesNotMatch(worker, /decision-plan-service/);
+  await assert.rejects(readFile(new URL('../js/services/decision-plan-service.js', import.meta.url), 'utf8'));
 });
 
 test('responsive CSS includes 320-friendly, tablet, desktop, reduced-motion, and print rules', async () => {
@@ -1591,15 +1651,16 @@ test('verified food programs include distribution schedules and short re-verific
   }
 });
 
-test('search UI exposes one Call 211 action and does not warn when stored fallback exists', async () => {
+test('search UI keeps Call 211 easy to reach and does not warn when stored fallback exists', async () => {
   const appSource = await readFile(new URL('../js/app.js', import.meta.url), 'utf8');
-  assert.equal((appSource.match(/href="tel:211"/g) || []).length, 1);
+  assert.ok((appSource.match(/href="tel:211"/g) || []).length >= 1);
+  assert.match(appSource, /class="header-211"/);
   assert.doesNotMatch(appSource, /state\.errorKey\s*=\s*['"]searchError['"]/);
   assert.match(appSource, /staticMatches\(\)\.length/);
   assert.match(appSource, /void searchNearby\(\)/);
 });
 
-test('only the verified 988 crisis number is present and completion estimates are explicitly non-guaranteed', async () => {
+test('only the verified 988 crisis number is present and nationwide matches are explicitly non-guaranteed', async () => {
   const paths = [
     '../js/app.js',
     '../js/localization.js',
@@ -1610,15 +1671,17 @@ test('only the verified 988 crisis number is present and completion estimates ar
   assert.doesNotMatch(combined, /\b911\b/);
   assert.match(combined, /988 Suicide & Crisis Lifeline/);
   const appSource = await readFile(new URL('../js/app.js', import.meta.url), 'utf8');
-  assert.match(appSource, /completionConfidence/);
-  assert.match(appSource, /planNoGuarantee/);
+  assert.match(appSource, /This is a preliminary match\. The program makes the final eligibility decision\./);
+  assert.match(appSource, /Only the organization can confirm eligibility/);
 });
 
 test('home page implementation does not render preloaded resource cards', async () => {
   const appSource = await readFile(new URL('../js/app.js', import.meta.url), 'utf8');
   const homeFunction = appSource.slice(appSource.indexOf('function homePage()'), appSource.indexOf('function filtersPanel()'));
   assert.doesNotMatch(homeFunction, /resourceCard\(/);
-  assert.match(homeFunction, /noHomeResources/);
+  assert.doesNotMatch(homeFunction, /searchBox\(/);
+  assert.doesNotMatch(homeFunction, /helperIntake\(/);
+  assert.match(homeFunction, /Search Local Help/);
   assert.match(appSource, /<select id="needSelect"/);
 });
 

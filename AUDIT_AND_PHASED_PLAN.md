@@ -30,7 +30,7 @@ BridgeAid remains a no-build static progressive web app:
 | Education coverage | UI and nationwide data used only “Education,” with no nationwide listing | Renamed the category to Education and Scholarships and added a verified Federal Student Aid/FAFSA record |
 | Application methods | Nationwide filters exposed only online, phone, and local-provider choices | Added mail, in-person, and multiple-method filtering |
 | BridgeAI lag and layout | Search enrichment could overlap and chat presentation was cramped | Retained stored-first responses and request deduplication; verified message gap, padding, widths, and response metrics |
-| Decision intelligence | The old “plan” was a saved list with notes/status only | Added an optional action-plan generator that considers urgency, published hours, deadlines, documents, application methods, distance, transportation, budget, walking limits, wheelchair access, childcare, and physical limits |
+| Nationwide guidance | The prior generated-plan workflow duplicated decisions that should be made from explicit eligibility rules | Replaced it with a short conditional quiz backed by official-source metadata and deterministic match explanations |
 | Background coverage | Verification jobs existed, but there was no coverage-gap discovery model | Added deterministic discovery-job generation and a database migration for coverage gaps, search runs, and eligibility evidence |
 | Exact-situation ranking | Situation text only toggled broad same-day/no-ID/accessibility filters and never evaluated a requested wall-clock time | Added structured constraint parsing, U.S. time-zone inference, exact-time weekly/distribution/holiday/appointment checks, ranking penalties and boosts, and visible explanations |
 | Eligibility research state | A missing rule array was treated as a technical failure, even when research was pending, ambiguous, out of area, or found no public restrictions | Added per-program research states, a prioritized official-source queue, review/failure reasons, normalized database tables, and CSV administrative export |
@@ -42,13 +42,13 @@ BridgeAid remains a no-build static progressive web app:
 1. **Safety and determinism** — freshness enforcement, normalized signatures, stable merges, logging, and pagination.
 2. **Nationwide discovery UX** — typed location suggestions, arbitrary U.S. coordinates/radius search, category expansion, and provider-directory separation.
 3. **Program guidance** — exact eligibility states, application-method labels, intake free text, and verified education aid.
-4. **Decision and optimization intelligence** — constraint-aware sequencing with exclusions, tradeoffs, reusable documents, travel estimates, and explicit non-guarantees.
+4. **Eligibility guidance** — conditional questions, deterministic rule checks, official-source links, uncertainty labels, and explicit non-guarantees.
 5. **Production data operations** — run migrations, connect a real database and worker, configure licensed geocoding/place/verification providers, and continuously execute coverage-gap discovery and evidence review.
 
 ## Verification completed
 
-- `npm run check`: 100 tests passing.
-- Browser workflows: self search, typed ZIP suggestions, helper search transition, nationwide separation, Eligibility, multilingual BridgeAI response, action-plan generation, and no console errors.
+- `npm run check`: 114 tests passing.
+- Browser workflows: self search, typed ZIP suggestions, helper search transition, nationwide separation, conditional eligibility quiz, and no console errors.
 - Responsive checks: no horizontal overflow at 320 px, 768 px, and desktop; chat remained within the viewport.
 
 ## Production dependencies not present in this repository

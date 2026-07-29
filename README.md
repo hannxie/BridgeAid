@@ -42,10 +42,11 @@ The implementation kept the no-build static architecture and existing resource r
 9. **Administration foundation** — added a database migration, authorization guard, audited admin action model, and retryable background-job model without exposing a public dashboard.
 10. **Hardening** — added deterministic tests, HTML escaping, safe links, phone sanitization, local-storage failure handling, offline states, and responsive browser checks.
 11. **Local action paths** — added verified Seattle-area programs with structured local eligibility, full addresses, required documents, exceptions, deadlines, application steps, and direct official actions.
-12. **Nationwide search and decision intelligence** — added five-result U.S. autocomplete, normalized search signatures, uncapped paginated results, stale-saved-result blocking, coverage-gap discovery jobs, nationwide/local-provider separation, Education and Scholarships, and constraint-aware action plans.
+12. **Nationwide search and decision intelligence** — added five-result U.S. autocomplete, normalized search signatures, uncapped paginated results, stale-saved-result blocking, coverage-gap discovery jobs, nationwide/local-provider separation, and Education and Scholarships.
 13. **Exact-situation ranking** — parses requested service, local date/time, urgency, distance, transportation, no-ID, appointment, accessibility, age, and household constraints; verified exact-time availability changes ranking and is explained on every result.
 14. **Program eligibility operations** — stores eligibility per organization and program, distinguishes pending/review/no-public-rules/technical-failure states, queues official-source research, and provides a CSV administrative export while keeping the application database authoritative.
 15. **Expanded national actions** — the nationwide catalog now includes more than twenty verified, actionable applications, assessments, claims, courses, searches, and counseling pathways across the requested categories.
+16. **Shared local search and short national screening** — self mode, helper mode, autocomplete refreshes, and GPS now use one validated Local Help workflow. Nationwide Help includes an optional, conditional, at-most-eight-question preliminary matcher across all 52 national entries, including 10 provider directories.
 
 ## User modes
 
@@ -172,6 +173,7 @@ Not stored by default:
 
 - Exact GPS coordinates
 - Eligibility answers
+- Nationwide quiz answers
 - Names of assisted people
 - Social Security numbers
 - Medical-record numbers
@@ -252,7 +254,7 @@ or:
 node --test
 ```
 
-The deterministic suite contains 100 checks covering:
+The deterministic suite contains more than 110 checks covering:
 
 - Mode validation, persistence, switching, and location preservation
 - Storage corruption and blocked-storage behavior
@@ -270,6 +272,8 @@ The deterministic suite contains 100 checks covering:
 - HTML escaping, URL safety, and phone sanitization
 - Helper plan creation, status, notes, removal, and clearing
 - Mode-aware orchestration
+- Shared self/helper/GPS local-search request handling
+- Complete eligibility metadata for all nationwide resources, conditional quiz questions, cautious matching labels, and the manual-review queue
 - Server-side admin authorization and audit history
 - Background-job retries
 - Required UI/privacy copy and responsive CSS
@@ -279,15 +283,16 @@ The deterministic suite contains 100 checks covering:
 1. Clear this site’s local browser data and reload. Confirm the mode selector appears.
 2. Choose “I need help,” reload, and confirm the choice persists.
 3. Enter a general location, switch to helper mode, switch back, and confirm the location remains.
-4. Confirm the home page shows no preloaded resources, immediate need and location are required, and the selector follows the documented service order.
-5. Switch to helper mode and complete only immediate need and location.
+4. Confirm the Home page is informational and has clear links to Local Help and Nationwide Help, with no search form or preloaded resources.
+5. Open Local Help in self mode and confirm need and location are required. Switch to helper mode and complete only location and one support type.
 6. Choose “Not safe tonight” and confirm the general safety notice appears without hiding resources.
 7. Add a resource to the plan, compare resources, update status, add a note, copy, print, remove, and clear.
 8. Search 98101 with Financial Assistance and Benefits, then open the Seattle Utility Discount Program eligibility and registration workflows. Confirm the exact local rules, documents, deadline, official actions, and verified date are shown.
 9. Disable the network and repeat a previously cached search. Confirm only still-current verified records remain and expired records are not shown.
 10. Test keyboard-only navigation, visible focus, 200% browser zoom, and a screen reader.
 11. Test widths of 320 px, 768 px, and desktop.
-12. Inspect the console during critical workflows and confirm there are no uncaught errors.
+12. Open Nationwide Help, complete and skip quiz questions, confirm the four cautious match labels and official-source links, then clear or restart the quiz.
+13. Inspect the console during critical workflows and confirm there are no uncaught errors.
 
 Automated in-app browser verification was performed at 320 px, 768 px, and 1440 px. It confirmed no horizontal overflow, 44-pixel interactive targets, persistent mode switching, location preservation, helper-plan creation/status/note/clear workflows, and no console errors.
 
@@ -309,7 +314,7 @@ Translations are interface summaries, not replacements for official legal or eli
 
 - Live Nominatim and Overpass calls still run in the browser. A production deployment should proxy and rate-limit them server-side.
 - OpenStreetMap coverage, hours, phone numbers, and websites vary by area.
-- The structured schedule and eligibility services are ready for verified records, but existing legacy records generally contain prose rather than machine-readable rules.
+- Nationwide records all carry eligibility type, questions, rules, official source, verification date, confidence, notes, variation flags, and manual-review status. Many complex programs intentionally remain “More information needed” because a short quiz cannot safely resolve official discretion, state rules, medical decisions, work credits, funding, or inventory.
 - No generative model or official-page extraction provider is configured.
 - No background worker executes queued jobs.
 - No persistent server database is connected.

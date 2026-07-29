@@ -1,10 +1,9 @@
 import {
   categories as legacyCategories,
   keywordMap,
-  resources as sourceResources,
-  nationwideResources
-} from '../data/resources.js?v=13';
-import { translate, detectMessageLanguage, requestedLanguage } from './localization.js?v=13';
+  resources as sourceResources
+} from '../data/resources.js?v=15';
+import { translate, detectMessageLanguage, requestedLanguage } from './localization.js?v=15';
 import {
   safeStorageGet,
   safeStorageSet,
@@ -74,7 +73,6 @@ import {
   updatePlanQuestions,
   removePlanResource
 } from './services/helper-plan-service.js';
-import { buildDecisionPlan, normalizePlanConstraints } from './services/decision-plan-service.js';
 import { hashForPage, isCurrentPage, pageFromHash } from './services/route-service.js';
 import { exportEligibilityCsv } from './services/eligibility-data-service.js';
 import {
@@ -84,6 +82,14 @@ import {
   searchFailureOutcome,
   diagnosticFingerprint
 } from './services/search-lifecycle-service.js';
+import {
+  normalizeLocalSearchRequest,
+  applyLocalSearchRequest
+} from './services/local-search-workflow.js?v=15';
+import {
+  conditionalEligibilityQuestions,
+  matchNationwidePrograms
+} from './services/nationwide-eligibility-service.js?v=15';
 
 const STORAGE = {
   mode: 'bridgeaid-mode',
@@ -191,11 +197,13 @@ const state = {
   storageWarning: false,
   helperIntake: safeObject(STORAGE.helperIntake),
   helperPlan: safeArray(STORAGE.helperPlan),
-  planConstraints: normalizePlanConstraints(),
-  decisionPlan: null,
-  planStatus: 'idle',
-  planError: '',
   compareIds: new Set(),
+  nationwideQuiz: {
+    answers: { needs: [] },
+    started: false,
+    step: 0,
+    completed: false
+  },
   selectedResourceId: '',
   panel: '',
   registrationStep: 0,
@@ -456,16 +464,11 @@ function header() {
         ${navButton('home', tr('navHome'))}
         ${navButton('find', tr('navFind'))}
         ${navButton('nationwide', tr('navNationwide'))}
-        ${navButton('eligibility', tr('navEligibility'))}
-        ${navButton('actionPlan', `${tr('navActionPlan')} (${state.helperPlan.length})`)}
-        ${navButton('saved', `${tr('navSaved')} (${state.saved.size})`)}
-        ${navButton('privacy', tr('navPrivacy'))}
       </div>
       <div class="nav-actions">
-        <button class="mode-chip" data-switch-mode aria-label="${attr(tr('switchMode'))}">
-          <span aria-hidden="true">${state.mode === 'helper' ? '◎' : '●'}</span>
-          ${state.mode === 'helper' ? tr('modeHelper') : tr('modeSelf')}
-        </button>
+        <span class="mode-label">${state.mode === 'helper' ? 'Helper' : 'Self'}</span>
+        <button class="mode-chip" data-switch-mode aria-label="${attr(tr('switchMode'))}">Switch</button>
+        <a class="header-211" href="tel:211" aria-label="${attr(tr('call211'))}">211</a>
         <label class="sr-only" for="language">${tr('language')}</label>
         <select id="language" aria-label="${attr(tr('language'))}">
           <option value="en" ${state.lang === 'en' ? 'selected' : ''}>English</option>
@@ -666,16 +669,35 @@ function homePage() {
     <section class="hero ${helper ? 'helper-hero' : ''}">
       <div class="wrap">
         ${communityLink()}
-        <span class="eyebrow">${helper ? tr('helperEyebrow') : tr('selfEyebrow')}</span>
-        <h1>${helper ? tr('helperHero') : tr('selfHero')}</h1>
-        <p>${helper ? tr('helperSub') : tr('selfSub')}</p>
-        ${helper ? '' : searchBox()}
+        <span class="eyebrow">Trusted help. Clear next steps.</span>
+        <h1>Free help should be easier to find.</h1>
+        <p>BridgeAid connects people with local services and nationwide programs.</p>
+        <div class="home-actions">
+          <button class="primary" data-page="find">Search Local Help</button>
+          <button class="secondary" data-page="nationwide">Explore Nationwide Help</button>
+        </div>
       </div>
     </section>
     ${statusMessages()}
-    ${helper
-      ? `<div class="wrap section helper-layout"><div>${helperIntake()}</div>${planPanel()}</div>`
-      : `<section class="wrap section home-empty"><p>${tr('noHomeResources')}</p></section>`}
+    <section class="wrap section home-guide" aria-labelledby="home-guide-title">
+      <div class="mission-copy"><span class="eyebrow">Why BridgeAid exists</span><h2 id="home-guide-title">Our mission</h2>
+        <p>We make free resources easier to find, understand, and use.</p></div>
+      <div><h2>What BridgeAid helps with</h2>
+        <ul class="home-help-list">
+          <li>Find help nearby</li>
+          <li>Check nationwide programs</li>
+          <li>Understand basic eligibility</li>
+          <li>Prepare before applying</li>
+          <li>Help yourself or another person</li>
+        </ul>
+      </div>
+      <div class="home-guide-grid">
+        <article><strong>Local Help</strong><p>Use a city, ZIP code, address, or your current location to find nearby providers.</p></article>
+        <article><strong>Nationwide Help</strong><p>Browse official U.S. resources or answer only the questions relevant to your needs.</p></article>
+        <article><strong>Your privacy</strong><p>Exact GPS coordinates and nationwide quiz answers are not saved. Only organizations can confirm eligibility.</p></article>
+      </div>
+      ${helper ? `<p class="privacy-notice">Helper mode is active. Local Help includes the guided intake and device-local resource plan.</p>` : ''}
+    </section>
   </main>`;
 }
 
@@ -862,9 +884,9 @@ function resourceCard(raw, options = {}) {
       <button class="text-action" data-registration="${attr(resource.id)}">${tr('registrationHelp')}</button>
       <button class="text-action" data-report="${attr(resource.id)}">${tr('reportIncorrect')}</button>
       <button class="text-action" data-save="${attr(resource.id)}" aria-pressed="${state.saved.has(resource.id)}">${state.saved.has(resource.id) ? `★ ${tr('savedAction')}` : `☆ ${tr('save')}`}</button>
-      ${!options.compact ? `
-        <button class="text-action" data-add-plan="${attr(resource.id)}" aria-pressed="${inPlan}">${inPlan ? `✓ ${tr('inActionPlan')}` : `+ ${tr('addToActionPlan')}`}</button>
-        ${state.mode === 'helper' ? `<button class="text-action" data-compare="${attr(resource.id)}" aria-pressed="${compared}">${compared ? '✓ ' : ''}${tr('compare')}</button>` : ''}` : ''}
+      ${!options.compact && state.mode === 'helper' ? `
+        <button class="text-action" data-add-plan="${attr(resource.id)}" aria-pressed="${inPlan}">${inPlan ? '✓ In helper plan' : '+ Add to helper plan'}</button>
+        <button class="text-action" data-compare="${attr(resource.id)}" aria-pressed="${compared}">${compared ? '✓ ' : ''}${tr('compare')}</button>` : ''}
     </div>
   </article>`;
 }
@@ -887,103 +909,22 @@ function comparisonPanel(resources) {
   </section>`;
 }
 
-function planConstraintValue(name) {
-  return state.planConstraints?.[name] ?? '';
-}
-
-function decisionPlanPanel(resources) {
-  const plan = state.decisionPlan;
-  return `<section class="decision-planner" aria-labelledby="decision-plan-title">
-    <div class="section-head">
-      <div><span class="step-label">${tr('planConstraints')}</span><h2 id="decision-plan-title">${tr('buildActionPlan')}</h2></div>
-    </div>
-    <p>${tr('actionPlanPageIntro')}</p>
-    ${state.planStatus === 'generating' ? `<div class="loading-state" role="status"><span class="spinner" aria-hidden="true"></span><strong>${tr('planGenerating')}</strong></div>` : ''}
-    ${state.planStatus === 'missing' ? `<div class="error-state">${tr('planMissingResources')}</div>` : ''}
-    ${state.planStatus === 'failure' ? `<div class="error-state">${tr('planGenerationFailed')} <button class="ghost" data-retry-plan>${tr('retry')}</button></div>` : ''}
-    ${state.planStatus === 'conflict' ? `<div class="error-state">${tr('planScheduleConflict')}</div>` : ''}
-    <form id="actionPlanForm" class="constraint-grid">
-      <label class="wide"><span>${tr('immediateNeeds')}</span><input name="immediateNeeds" value="${attr(planConstraintValue('immediateNeeds'))}" placeholder="${attr(tr('immediateNeedsPlaceholder'))}"></label>
-      <label class="wide"><span>${tr('longerTermNeeds')}</span><input name="longerTermNeeds" value="${attr(planConstraintValue('longerTermNeeds'))}" placeholder="${attr(tr('longerTermNeedsPlaceholder'))}"></label>
-      <label><span>${tr('urgency')}</span><select name="urgency">
-        <option value="immediate" ${planConstraintValue('urgency') === 'immediate' ? 'selected' : ''}>${tr('urgencyImmediate')}</option>
-        <option value="today" ${planConstraintValue('urgency') === 'today' ? 'selected' : ''}>${tr('urgencyToday')}</option>
-        <option value="longTerm" ${planConstraintValue('urgency') === 'longTerm' ? 'selected' : ''}>${tr('urgencyLongTerm')}</option>
-      </select></label>
-      <label><span>${tr('availableDays')}</span><input name="availableDays" value="${attr(planConstraintValue('availableDays'))}" placeholder="${attr(tr('availableDaysPlaceholder'))}"></label>
-      <label><span>${tr('availableTimes')}</span><input name="availableTimes" value="${attr(planConstraintValue('availableTimes'))}" placeholder="${attr(tr('availableTimesPlaceholder'))}"></label>
-      <label><span>${tr('transportation')}</span><select name="transportation">
-        <option value="walking" ${planConstraintValue('transportation') === 'walking' ? 'selected' : ''}>${tr('walking')}</option>
-        <option value="transit" ${planConstraintValue('transportation') === 'transit' ? 'selected' : ''}>${tr('transit')}</option>
-        <option value="driving" ${planConstraintValue('transportation') === 'driving' ? 'selected' : ''}>${tr('driving')}</option>
-      </select></label>
-      <label><span>${tr('maximumDistance')}</span><input type="number" min="1" max="25" step="1" name="maxDistance" value="${attr(planConstraintValue('maxDistance'))}"></label>
-      <label><span>${tr('transportBudget')}</span><input type="number" min="0" step="0.01" name="transportationBudget" value="${attr(planConstraintValue('transportationBudget'))}"></label>
-      <label><span>${tr('walkingLimit')}</span><input type="number" min="0" step="0.1" name="walkingLimit" value="${attr(planConstraintValue('walkingLimit'))}"></label>
-      <label><span>${tr('applicationDeadline')}</span><input type="date" name="deadline" value="${attr(planConstraintValue('deadline'))}"></label>
-      <label class="wide"><span>${tr('physicalLimitations')}</span><input name="physicalLimitations" value="${attr(planConstraintValue('physicalLimitations'))}"></label>
-      <label class="filter-check"><input type="checkbox" name="wheelchairAccessible" ${planConstraintValue('wheelchairAccessible') ? 'checked' : ''}><span>${tr('wheelchairAccessible')}</span></label>
-      <label class="filter-check"><input type="checkbox" name="childcareNeeded" ${planConstraintValue('childcareNeeded') ? 'checked' : ''}><span>${tr('childcareNeeded')}</span></label>
-      <button class="primary wide" type="submit" ${resources.length && state.planStatus !== 'generating' ? '' : 'disabled'}>${plan ? tr('regeneratePlan') : tr('generatePlan')}</button>
-    </form>
-    ${plan && ['completed', 'conflict'].includes(state.planStatus) ? `<div class="generated-plan" aria-live="polite">
-      <h3>${tr('yourActionPlan')}</h3>
-      <p>${esc(plan.explanation)}</p>
-      ${plan.documents?.length ? `<h3>${tr('documents')}</h3><ul>${plan.documents.map(document => `<li>${esc(document)}${plan.reusableDocuments?.includes(document) ? ` <strong>(${tr('reusableDocument')})</strong>` : ''}</li>`).join('')}</ul>` : ''}
-      ${plan.steps.length ? `<ol>${plan.steps.map(step => `<li>
-        <strong>${esc(step.title)}</strong>
-        <p>${esc(step.action)}</p>
-        ${step.timing ? `<p><strong>${tr('timing')}:</strong> ${esc(step.timing)}</p>` : ''}
-        ${step.travel ? `<p><strong>${tr('travelEstimate')}:</strong> ${esc(step.travel)}</p>` : ''}
-        <p><strong>${tr('whyThisOrder')}:</strong> ${esc(step.reason)}</p>
-        <p><strong>${tr('completionEstimate')}:</strong> ${esc(step.completionConfidence.label)} — ${esc(step.completionConfidence.reason)}</p>
-      </li>`).join('')}</ol>` : `<div class="empty-state">${tr('noFeasiblePlan')}</div>`}
-      ${plan.tradeoffs.length ? `<h3>${tr('tradeoffs')}</h3><ul>${plan.tradeoffs.map(item => `<li>${esc(item)}</li>`).join('')}</ul>` : ''}
-      ${plan.excluded.length ? `<details><summary>${tr('excludedResults', { count: plan.excluded.length })}</summary><ul>${plan.excluded.map(item => `<li><strong>${esc(item.name)}</strong>: ${esc(item.reasons.join('; '))}</li>`).join('')}</ul></details>` : ''}
-      <p class="privacy-notice">${tr('planNoGuarantee')}</p>
-    </div>` : ''}
-  </section>`;
-}
-
-function selectedActionPlanResources() {
-  return state.helperPlan.map(item => normalizeResource(resourceById(item.id) || item, state.lang));
-}
-
-function actionPlanSelection(resources) {
-  if (!resources.length) {
-    return `<section class="action-plan-empty">
-      <h2>${tr('planNoResourcesTitle')}</h2>
-      <p>${tr('planNoResourcesBody')}</p>
-      <button class="primary" data-page="find">${tr('navFind')}</button>
-    </section>`;
-  }
-  return `<section class="action-plan-selection" aria-labelledby="action-plan-selection-title">
-    <div class="section-head">
-      <div><span class="step-label">${tr('selectedResources', { count: resources.length })}</span><h2 id="action-plan-selection-title">${tr('planSelectedResources')}</h2></div>
-    </div>
-    <div class="action-plan-resource-list">${resources.map(resource => `<article>
-      <div><strong>${esc(resource.name)}</strong><p>${esc(resource.address || tr('onlineAvailable'))}</p></div>
-      <dl>
-        <dt>${tr('hours')}</dt><dd>${esc(resource.hours || tr('hoursNotPubliclyListed'))}</dd>
-        <dt>${tr('documents')}</dt><dd>${esc(resource.requiredDocuments.join('; ') || tr('nonePublished'))}</dd>
-      </dl>
-      <button class="text-action" data-add-plan="${attr(resource.id)}">${tr('removeFromActionPlan')}</button>
-    </article>`).join('')}</div>
-  </section>`;
-}
-
-function actionPlanPage() {
-  const resources = selectedActionPlanResources();
-  return `<main id="main" class="wrap section page action-plan-page">
-    <div class="page-head"><div><span class="eyebrow">${tr('actionPlanEyebrow')}</span><h1>${tr('buildActionPlan')}</h1><p>${tr('actionPlanPageIntro')}</p></div></div>
-    ${statusMessages()}
-    ${actionPlanSelection(resources)}
-    ${resources.length ? decisionPlanPanel(resources) : ''}
-    ${resources.length ? planPanel() : ''}
-  </main>`;
-}
-
 function findPage() {
+  if (!state.searched) {
+    return `<main id="main" class="wrap section page local-help-page">
+      <div class="page-head">
+        <div><span class="eyebrow">Help near you</span><h1>Local Help</h1>
+          <p>Search by city, ZIP code, address, or current location. A general location is enough.</p>
+        </div>
+        ${communityLink()}
+      </div>
+      ${statusMessages()}
+      ${state.mode === 'helper'
+        ? `<div class="helper-layout"><div>${helperIntake()}</div>${planPanel()}</div>`
+        : `<section aria-label="Local resource search">${searchBox()}</section>`}
+      <p class="privacy-notice">Exact GPS coordinates are used only for the current search and are not saved.</p>
+    </main>`;
+  }
   const resources = allResults();
   const visibleResources = resources.slice(0, state.visibleResults);
   return `<main id="main" class="wrap section page">
@@ -1038,31 +979,7 @@ function planText() {
       item.questions ? `${tr('questionsToAsk')}: ${item.questions}` : '',
       tr('confirmOrganization'),
       ''
-    ].filter(Boolean)),
-    ...(state.decisionPlan ? [
-      '',
-      tr('yourActionPlan'),
-      ...state.decisionPlan.steps.flatMap((step, index) => [
-        `${index + 1}. ${step.title}`,
-        step.action,
-        step.timing ? `${tr('timing')}: ${step.timing}` : '',
-        step.travel ? `${tr('travelEstimate')}: ${step.travel}` : '',
-        `${tr('whyThisOrder')}: ${step.reason}`,
-        `${tr('completionEstimate')}: ${step.completionConfidence.label} - ${step.completionConfidence.reason}`,
-        ''
-      ].filter(Boolean)),
-      ...(state.decisionPlan.documents?.length ? [
-        tr('documents'),
-        ...state.decisionPlan.documents.map(document => `- ${document}${state.decisionPlan.reusableDocuments?.includes(document) ? ` (${tr('reusableDocument')})` : ''}`)
-      ] : []),
-      ...(state.decisionPlan.tradeoffs?.length ? [
-        '',
-        tr('tradeoffs'),
-        ...state.decisionPlan.tradeoffs.map(item => `- ${item}`)
-      ] : []),
-      '',
-      tr('planNoGuarantee')
-    ] : [])
+    ].filter(Boolean))
   ].join('\n');
 }
 
@@ -1105,10 +1022,11 @@ function planItem(item) {
   </article>`;
 }
 
-function nationwideCard(raw) {
+function nationwideCard(raw, match = null) {
   const resource = normalizeResource(raw, state.lang);
   const primaryLink = resource.applicationLinks[0];
   const website = safeUrl(primaryLink?.url || resource.officialWebsite || resource.website);
+  const eligibilitySource = safeUrl(resource.eligibilitySourceUrl);
   const eligibilityLabel = resource.eligibilityStatus === 'structured'
     ? resource.eligibilitySummary
     : resource.requiresLocalProvider
@@ -1123,6 +1041,12 @@ function nationwideCard(raw) {
     </div>
     <div><h2>${esc(resource.name)}</h2></div>
     <p class="description">${esc(resource.serviceOffered || resource.description)}</p>
+    ${match ? `<section class="match-explanation" aria-label="${attr(match.label)}">
+      <strong class="match-label ${attr(match.code)}">${esc(match.label)}</strong>
+      ${match.matched.length ? `<p><strong>What matched:</strong> ${esc(match.matched.join('; '))}</p>` : ''}
+      ${match.unknown.length ? `<p><strong>What still needs confirmation:</strong> ${esc(match.unknown.join('; '))}</p>` : ''}
+      ${match.problems.length ? `<p><strong>What may not match:</strong> ${esc(match.problems.join('; '))}</p>` : ''}
+    </section>` : ''}
     <dl class="resource-meta">
       <dt>${tr('nationwideAvailability')}</dt><dd>${esc(resource.nationwideAvailability)}</dd>
       <dt>${tr('whoItHelps')}</dt><dd>${esc(resource.whoItHelps || resource.eligibilitySummary)}</dd>
@@ -1130,14 +1054,17 @@ function nationwideCard(raw) {
       <dt>${tr('waysToApply')}</dt><dd>${esc(applicationMethods(resource.applicationMethods) || tr('confirmOrganization'))}</dd>
       <dt>${tr('cost')}</dt><dd>${esc(resource.freeStatus || tr('confirmOrganization'))}</dd>
       ${resource.applicationDeadline ? `<dt>${tr('applicationDeadline')}</dt><dd>${esc(resource.applicationDeadline)}</dd>` : ''}
+      <dt>Eligibility type</dt><dd>${esc(resource.eligibilityType)}</dd>
+      <dt>Official source</dt><dd>${esc(resource.officialSourceName)}</dd>
       <dt>${tr('documents')}</dt><dd>${resource.requiredDocuments.length
         ? `<ul>${resource.requiredDocuments.map(item => `<li>${esc(item)}</li>`).join('')}</ul>`
         : esc(tr('nonePublished'))}</dd>
     </dl>
     ${resource.requiresLocalProvider ? `<p class="local-provider-note">${tr('localProviderExplanation')}</p>` : ''}
     ${resource.applicationSteps.length ? `<details class="online-steps"><summary>${tr('applicationProcess')}</summary><ol>${resource.applicationSteps.map(step => `<li>${esc(step)}</li>`).join('')}</ol></details>` : ''}
-    <p class="verification-line"><strong>${tr('lastVerified')}:</strong> ${esc(resource.lastVerified || resource.applicationLastVerified)}</p>
+    <p class="verification-line"><strong>Eligibility reviewed:</strong> ${esc(resource.lastEligibilityVerified || resource.eligibilityLastVerified)} · ${esc(resource.eligibilityConfidence)} confidence</p>
     <div class="card-actions action-priority">
+      ${eligibilitySource ? `<a class="secondary" href="${attr(eligibilitySource)}" target="_blank" rel="noopener noreferrer">Official eligibility source ↗</a>` : ''}
       ${resource.phone ? `<a class="primary" href="tel:${attr(phoneHref(resource.phone))}">☎ ${tr('call')}</a>` : ''}
       ${website ? `<a class="${resource.phone ? 'secondary' : 'primary'}" href="${attr(website)}" target="_blank" rel="noopener noreferrer">${esc(primaryLink?.label || tr('openOfficialResource'))} ↗</a>` : ''}
       <button class="ghost" data-save="${attr(resource.id)}" aria-pressed="${state.saved.has(resource.id)}">${state.saved.has(resource.id) ? `★ ${tr('savedAction')}` : `☆ ${tr('save')}`}</button>
@@ -1145,9 +1072,93 @@ function nationwideCard(raw) {
   </article>`;
 }
 
+const US_STATE_OPTIONS = [
+  ['AL', 'Alabama'], ['AK', 'Alaska'], ['AZ', 'Arizona'], ['AR', 'Arkansas'], ['CA', 'California'],
+  ['CO', 'Colorado'], ['CT', 'Connecticut'], ['DE', 'Delaware'], ['DC', 'District of Columbia'],
+  ['FL', 'Florida'], ['GA', 'Georgia'], ['HI', 'Hawaii'], ['ID', 'Idaho'], ['IL', 'Illinois'],
+  ['IN', 'Indiana'], ['IA', 'Iowa'], ['KS', 'Kansas'], ['KY', 'Kentucky'], ['LA', 'Louisiana'],
+  ['ME', 'Maine'], ['MD', 'Maryland'], ['MA', 'Massachusetts'], ['MI', 'Michigan'], ['MN', 'Minnesota'],
+  ['MS', 'Mississippi'], ['MO', 'Missouri'], ['MT', 'Montana'], ['NE', 'Nebraska'], ['NV', 'Nevada'],
+  ['NH', 'New Hampshire'], ['NJ', 'New Jersey'], ['NM', 'New Mexico'], ['NY', 'New York'],
+  ['NC', 'North Carolina'], ['ND', 'North Dakota'], ['OH', 'Ohio'], ['OK', 'Oklahoma'],
+  ['OR', 'Oregon'], ['PA', 'Pennsylvania'], ['RI', 'Rhode Island'], ['SC', 'South Carolina'],
+  ['SD', 'South Dakota'], ['TN', 'Tennessee'], ['TX', 'Texas'], ['UT', 'Utah'], ['VT', 'Vermont'],
+  ['VA', 'Virginia'], ['WA', 'Washington'], ['WV', 'West Virginia'], ['WI', 'Wisconsin'], ['WY', 'Wyoming'],
+  ['PR', 'Puerto Rico'], ['OTHER', 'Another U.S. territory']
+];
+
+function nationwideQuestionInput(question, value = '') {
+  if (question.type === 'number') {
+    return `<input id="nationwide-answer" name="answer" type="number" min="${question.min}" max="${question.max}" value="${attr(value)}">`;
+  }
+  const options = question.type === 'state'
+    ? US_STATE_OPTIONS
+    : question.type === 'yesno'
+      ? [['yes', 'Yes'], ['no', 'No'], ['not-sure', 'Not sure / prefer not to answer']]
+      : question.options;
+  return `<select id="nationwide-answer" name="answer">
+    <option value="">Choose an answer</option>
+    ${options.map(([optionValue, label]) => `<option value="${attr(optionValue)}" ${String(value) === optionValue ? 'selected' : ''}>${esc(label)}</option>`).join('')}
+  </select>`;
+}
+
+function nationwideQuizPanel(nationalResources) {
+  const quiz = state.nationwideQuiz;
+  const answers = quiz.answers;
+  const questions = conditionalEligibilityQuestions(nationalResources, answers).slice(0, 8);
+  if (quiz.completed) {
+    const matches = matchNationwidePrograms(nationalResources, answers);
+    return `<section class="nationwide-quiz quiz-results" aria-labelledby="quiz-title">
+      <div class="section-head"><div><span class="eyebrow">Preliminary screening</span><h2 id="quiz-title">Programs that may fit</h2></div>
+        <div class="quiz-actions"><button class="ghost" data-quiz-clear>Clear my answers</button><button class="ghost" data-quiz-restart>Start over</button></div></div>
+      <div class="notice"><strong>This is a preliminary match. The program makes the final eligibility decision.</strong> Only the organization can confirm eligibility. Rules, funding, location, and availability can change.</div>
+      <p>Your answers were used in this page only and were not saved.</p>
+      <div class="resource-list quiz-match-list">${matches.map(({ resource, decision }) => nationwideCard(resource, decision)).join('')}</div>
+    </section>`;
+  }
+  if (!quiz.started) {
+    const selected = new Set(answers.needs || []);
+    return `<section class="nationwide-quiz" aria-labelledby="quiz-title">
+      <span class="eyebrow">Optional short quiz</span>
+      <h2 id="quiz-title">Find Programs for Me</h2>
+      <p>Choose the help you want. BridgeAid will ask at most eight relevant questions, one at a time.</p>
+      <div class="notice"><strong>Preliminary only.</strong> Skip any question. Do not enter names, account numbers, document numbers, diagnoses, or other sensitive details. Answers are not saved.</div>
+      <form id="nationwideQuizNeeds">
+        <fieldset class="quiz-needs"><legend>What kind of help are you looking for?</legend>
+          ${CATEGORY_CONFIG.filter(item => !['all', 'other'].includes(item.id)).map(item => `<label class="filter-check">
+            <input type="checkbox" name="needs" value="${item.id}" ${selected.has(item.id) ? 'checked' : ''}>
+            <span>${categoryIcon(item.id)} ${tr(item.key)}</span>
+          </label>`).join('')}
+        </fieldset>
+        <button class="primary" type="submit">Start the quiz</button>
+      </form>
+    </section>`;
+  }
+  const question = questions[quiz.step];
+  if (!question) {
+    quiz.completed = true;
+    return nationwideQuizPanel(nationalResources);
+  }
+  const value = answers[question.id] ?? '';
+  return `<section class="nationwide-quiz" aria-labelledby="quiz-title">
+    <span class="eyebrow">Question ${quiz.step + 1} of ${questions.length}</span>
+    <h2 id="quiz-title">Find Programs for Me</h2>
+    <form id="nationwideQuizQuestion" data-question-id="${attr(question.id)}">
+      <label for="nationwide-answer"><strong>${esc(question.label)}</strong></label>
+      ${question.help ? `<p class="field-help">${esc(question.help)}</p>` : ''}
+      ${nationwideQuestionInput(question, value)}
+      <div class="quiz-actions">
+        ${quiz.step ? '<button class="ghost" type="button" data-quiz-back>Back</button>' : ''}
+        <button class="ghost" type="button" data-quiz-skip>Skip this question</button>
+        <button class="ghost" type="button" data-quiz-clear>Clear my answers</button>
+        <button class="primary" type="submit">${quiz.step === questions.length - 1 ? 'See matches' : 'Next'}</button>
+      </div>
+    </form>
+  </section>`;
+}
+
 function nationwidePage() {
-  const normalized = freshResources(nationwideResources)
-    .filter(resource => !resource.requiresLocalProvider)
+  const normalized = freshResources(sourceResources.filter(resource => resource.scope !== 'location'))
     .map(resource => normalizeResource(resource, state.lang));
   const categoriesAvailable = [...new Set(normalized
     .map(resource => resource.category)
@@ -1170,6 +1181,9 @@ function nationwidePage() {
     <span class="eyebrow">${tr('nationwideEyebrow')}</span>
     <h1>${tr('nationwideTitle')}</h1>
     <p class="lead">${tr('nationwideIntro')}</p>
+    ${statusMessages()}
+    ${nationwideQuizPanel(normalized)}
+    <div class="section-head nationwide-browse-head"><div><span class="eyebrow">Official sources</span><h2>Browse all nationwide resources</h2></div></div>
     <section class="online-filters" aria-label="${attr(tr('nationwideFilters'))}">
       <label><span>${tr('category')}</span><select data-online-filter="category">
         <option value="all">${tr('categoryAll')}</option>
@@ -1193,7 +1207,7 @@ function nationwidePage() {
     </section>
     <p class="results-summary">${tr('resultsCount', { count: filtered.length })}</p>
     <div class="resource-list nationwide-list">${filtered.length
-      ? filtered.map(nationwideCard).join('')
+      ? filtered.map(resource => nationwideCard(resource)).join('')
       : `<div class="empty-state">${tr('noOnlineResults')}</div>`}</div>
   </main>`;
 }
@@ -1209,7 +1223,7 @@ function savedPage() {
     <div class="page-head"><h1>${tr('savedTitle')}</h1></div>
     ${unavailableCount ? `<div class="error-state">${tr('savedNeedsVerification', { count: unavailableCount })} <button class="ghost" data-retry-saved>${tr('retryVerification')}</button></div>` : ''}
     <div class="resource-list">${saved.length ? saved.map(resource =>
-      resource.scope === 'nationwide-online' ? nationwideCard(resource) : resourceCard(resource)).join('') : `<div class="empty-state">${tr('savedEmpty')}</div>`}</div>
+      resource.scope !== 'location' ? nationwideCard(resource) : resourceCard(resource)).join('') : `<div class="empty-state">${tr('savedEmpty')}</div>`}</div>
   </main>`;
 }
 
@@ -1601,22 +1615,34 @@ function chat() {
 }
 
 function footer() {
-  return `<footer><div class="wrap"><strong>BridgeAid</strong><br><small>${tr('footerNotice')}</small></div></footer>`;
+  return `<footer><div class="wrap footer-inner"><div><strong>BridgeAid</strong><br><small>${tr('footerNotice')}</small></div>
+    <div class="footer-links">
+      <button data-page="saved">${tr('navSaved')} (${state.saved.size})</button>
+      <button data-page="privacy">${tr('navPrivacy')}</button>
+    </div>
+  </div></footer>`;
 }
 
 function render(options = {}) {
   document.documentElement.lang = state.lang === 'zh' ? 'zh-Hans' : state.lang;
   document.title = tr('appTitle');
-  const page = {
+  const pageFactory = {
     home: homePage,
     find: findPage,
     nationwide: nationwidePage,
     eligibility: eligibilityPage,
-    actionPlan: actionPlanPage,
     registration: registrationPage,
     saved: savedPage,
     privacy: privacyPage
-  }[state.page]?.() || homePage();
+  }[state.page] || homePage;
+  let page;
+  try {
+    page = pageFactory();
+  } catch (error) {
+    console.error('BridgeAid render failed', error);
+    app.innerHTML = `${header()}<main id="main" class="wrap section page"><div class="error-state">This page could not be displayed. Please reload or choose another page.</div></main>${footer()}${modeSelector()}`;
+    return;
+  }
   app.innerHTML = `${header()}${page}${footer()}${chat()}${requirementsPanel()}${reportPanel()}${modeSelector()}`;
   if (options.focus) requestAnimationFrame(() => document.querySelector(options.focus)?.focus());
 }
@@ -1852,83 +1878,80 @@ async function searchNearby({ coordinates = null, quiet = false } = {}) {
   });
 }
 
-async function submitSearch(form) {
+function selfSearchInput(form) {
   const data = new FormData(form);
-  state.category = String(data.get('need') || '');
-  state.otherNeed = String(data.get('otherNeed') || '').trim();
-  state.situation = String(data.get('situation') || '').trim();
-  state.location = String(data.get('location') || '').trim();
-  state.unit = String(data.get('unit') || state.unit);
-  state.radiusValue = Number(data.get('radius')) || 5;
-  state.travelMode = String(data.get('travelMode') || 'walking');
-  state.searchCategories = state.category && !['all', 'other'].includes(state.category)
-    ? [state.category]
-    : [];
-  state.query = searchNeed();
-  state.coordinates = null;
-  state.locationSuggestions = [];
-  if (!state.category || !state.location) {
-    state.errorKey = 'locationRequired';
-    render({ focus: !state.category ? '#needSelect' : '#locationInput' });
-    return;
-  }
-  if (state.category === 'other' && !state.otherNeed) {
-    state.errorKey = 'otherNeedRequired';
-    render({ focus: '#otherNeedInput' });
-    return;
-  }
-  applySituationFilters(`${state.otherNeed} ${state.situation}`);
-  state.searched = true;
-  setPageRoute('find');
-  state.storedResults = sourceResources;
-  state.visibleResults = 20;
-  state.decisionPlan = null;
-  persistShared();
-  void searchNearby();
+  return {
+    mode: 'self',
+    category: data.get('need'),
+    otherNeed: data.get('otherNeed'),
+    situation: data.get('situation'),
+    location: data.get('location'),
+    unit: data.get('unit'),
+    radiusValue: data.get('radius'),
+    travelMode: data.get('travelMode')
+  };
 }
 
-async function generateDecisionPlan(form) {
-  const data = new FormData(form);
-  state.planConstraints = normalizePlanConstraints({
-    immediateNeeds: data.get('immediateNeeds'),
-    longerTermNeeds: data.get('longerTermNeeds'),
-    urgency: data.get('urgency'),
-    availableDays: data.get('availableDays'),
-    availableTimes: data.get('availableTimes'),
-    transportation: data.get('transportation'),
-    maxDistance: data.get('maxDistance'),
-    transportationBudget: data.get('transportationBudget'),
-    walkingLimit: data.get('walkingLimit'),
-    wheelchairAccessible: data.has('wheelchairAccessible'),
-    physicalLimitations: data.get('physicalLimitations'),
-    childcareNeeded: data.has('childcareNeeded'),
-    deadline: data.get('deadline')
+function helperSearchInput() {
+  const categories = Array.isArray(state.helperIntake.serviceCategories)
+    ? state.helperIntake.serviceCategories
+    : [];
+  return {
+    mode: 'helper',
+    category: categories[0],
+    categories,
+    situation: state.helperIntake.situation,
+    location: state.helperIntake.location || state.location,
+    unit: state.unit,
+    radiusValue: state.radiusValue,
+    travelMode: state.travelMode,
+    context: `${state.helperIntake.identification || ''} ${state.helperIntake.accessibility || ''}`
+  };
+}
+
+function activeSearchInput(overrides = {}) {
+  return {
+    mode: state.mode,
+    category: state.category,
+    categories: state.searchCategories,
+    otherNeed: state.otherNeed,
+    situation: state.situation,
+    location: state.location,
+    unit: state.unit,
+    radiusValue: state.radiusValue,
+    travelMode: state.travelMode,
+    context: state.mode === 'helper'
+      ? `${state.helperIntake.identification || ''} ${state.helperIntake.accessibility || ''}`
+      : '',
+    ...overrides
+  };
+}
+
+function runLocalHelpSearch(input) {
+  const normalized = normalizeLocalSearchRequest(input, {
+    unit: state.unit,
+    radiusValue: state.radiusValue,
+    travelMode: state.travelMode,
+    gpsLabel: tr('useLocation')
   });
-  const candidates = selectedActionPlanResources();
-  if (!candidates.length) {
-    state.planStatus = 'missing';
-    state.decisionPlan = null;
-    render({ focus: '#decision-plan-title' });
-    return;
+  if (!normalized.ok) {
+    state.errorKey = normalized.errorKey;
+    render({ focus: normalized.focus });
+    return false;
   }
-  state.planStatus = 'generating';
-  state.planError = '';
-  state.decisionPlan = null;
-  render({ focus: '#decision-plan-title' });
-  await Promise.resolve();
-  try {
-    const plan = buildDecisionPlan(candidates, state.planConstraints, {
-      mode: state.mode,
-      situationConstraints: state.situationConstraints
-    });
-    state.decisionPlan = plan;
-    state.planStatus = plan.steps.length ? 'completed' : plan.excluded.length ? 'conflict' : 'missing';
-  } catch (error) {
-    state.decisionPlan = null;
-    state.planStatus = 'failure';
-    state.planError = error?.name || 'PLAN_GENERATION_FAILED';
-  }
-  render({ focus: '#decision-plan-title' });
+  applyLocalSearchRequest(state, normalized.request, { parseSituation, sourceResources });
+  applySituationFilters([
+    state.otherNeed,
+    state.situation,
+    normalized.request.context
+  ].filter(Boolean).join(' '));
+  state.query = searchNeed();
+  setPageRoute('find');
+  if (normalized.request.mode === 'helper') persistHelper();
+  persistShared();
+  render();
+  void searchNearby();
+  return true;
 }
 
 function addToPlan(id) {
@@ -1942,8 +1965,6 @@ function addToPlan(id) {
       directions: directionsUrl(resource, 'walking')
     });
   }
-  state.decisionPlan = null;
-  state.planStatus = state.helperPlan.length ? 'idle' : 'missing';
   persistHelper();
   render();
 }
@@ -2067,8 +2088,35 @@ async function sendChat(form) {
 
 app.addEventListener('submit', event => {
   event.preventDefault();
-  if (event.target.matches('#searchForm')) submitSearch(event.target);
-  if (event.target.matches('#actionPlanForm')) void generateDecisionPlan(event.target);
+  if (event.target.matches('#searchForm')) runLocalHelpSearch(selfSearchInput(event.target));
+  if (event.target.matches('#nationwideQuizNeeds')) {
+    const needs = new FormData(event.target).getAll('needs').map(String);
+    if (!needs.length) {
+      state.errorText = 'Choose at least one kind of help to start the quiz.';
+      render({ focus: '#quiz-title' });
+      return;
+    }
+    state.errorText = '';
+    state.nationwideQuiz.answers = { needs };
+    state.nationwideQuiz.started = true;
+    state.nationwideQuiz.step = 0;
+    state.nationwideQuiz.completed = conditionalEligibilityQuestions(
+      sourceResources.filter(resource => resource.scope !== 'location'),
+      state.nationwideQuiz.answers
+    ).length === 0;
+    render({ focus: '#quiz-title' });
+  }
+  if (event.target.matches('#nationwideQuizQuestion')) {
+    const questionId = event.target.dataset.questionId;
+    state.nationwideQuiz.answers[questionId] = String(new FormData(event.target).get('answer') || 'not-sure');
+    const questions = conditionalEligibilityQuestions(
+      sourceResources.filter(resource => resource.scope !== 'location'),
+      state.nationwideQuiz.answers
+    ).slice(0, 8);
+    state.nationwideQuiz.step += 1;
+    state.nationwideQuiz.completed = state.nationwideQuiz.step >= questions.length;
+    render({ focus: '#quiz-title' });
+  }
   if (event.target.matches('#chatForm')) sendChat(event.target);
   if (event.target.matches('#reportForm')) processReport(event.target);
 });
@@ -2079,7 +2127,10 @@ app.addEventListener('click', async event => {
   if (target.matches('[data-mode]')) {
     switchMode(state, target.dataset.mode);
     state.modePromptOpen = false;
-    setPageRoute('home');
+    state.searched = false;
+    state.loading = false;
+    state.errorKey = '';
+    state.errorText = '';
     render({ focus: '#main' });
   }
   if (target.matches('[data-switch-mode]')) {
@@ -2110,15 +2161,11 @@ app.addEventListener('click', async event => {
     }
     target.disabled = true;
     navigator.geolocation.getCurrentPosition(
-      async position => {
-        state.location = tr('useLocation');
-        state.searched = Boolean(state.category);
-        setPageRoute(state.searched ? 'find' : 'home');
-        state.storedResults = sourceResources;
-        state.liveResults = [];
-        persistShared();
-        if (state.searched) void searchNearby({ coordinates: { lat: position.coords.latitude, lng: position.coords.longitude } });
-        else render();
+      position => {
+        runLocalHelpSearch(activeSearchInput({
+          location: tr('useLocation'),
+          coordinates: { lat: position.coords.latitude, lng: position.coords.longitude }
+        }));
       },
       error => {
         state.errorKey = error.code === 3 ? 'locationTimeout' : 'locationDenied';
@@ -2143,8 +2190,31 @@ app.addEventListener('click', async event => {
     persistShared();
     render();
     if (target.dataset.locationTarget !== 'helper' && state.searched && state.category) {
-      void searchNearby({ coordinates: state.coordinates });
+      runLocalHelpSearch(activeSearchInput({
+        location: state.location,
+        coordinates: state.coordinates
+      }));
     }
+  }
+  if (target.matches('[data-quiz-back]')) {
+    state.nationwideQuiz.step = Math.max(0, state.nationwideQuiz.step - 1);
+    render({ focus: '#quiz-title' });
+  }
+  if (target.matches('[data-quiz-skip]')) {
+    const form = target.closest('#nationwideQuizQuestion');
+    const questionId = form?.dataset.questionId;
+    if (questionId) state.nationwideQuiz.answers[questionId] = 'not-sure';
+    const questions = conditionalEligibilityQuestions(
+      sourceResources.filter(resource => resource.scope !== 'location'),
+      state.nationwideQuiz.answers
+    ).slice(0, 8);
+    state.nationwideQuiz.step += 1;
+    state.nationwideQuiz.completed = state.nationwideQuiz.step >= questions.length;
+    render({ focus: '#quiz-title' });
+  }
+  if (target.matches('[data-quiz-restart], [data-quiz-clear]')) {
+    state.nationwideQuiz = { answers: { needs: [] }, started: false, step: 0, completed: false };
+    render({ focus: '#quiz-title' });
   }
   if (target.matches('[data-load-more]')) {
     state.visibleResults += 20;
@@ -2199,31 +2269,7 @@ app.addEventListener('click', async event => {
     render();
   }
   if (target.matches('[data-helper-search]')) {
-    const selectedCategories = Array.isArray(state.helperIntake.serviceCategories)
-      ? state.helperIntake.serviceCategories
-      : [];
-    state.otherNeed = '';
-    state.situation = state.helperIntake.situation || '';
-    state.category = selectedCategories[0] || '';
-    state.searchCategories = [...selectedCategories];
-    state.location = state.helperIntake.location || state.location;
-    if (!state.category || !state.location) {
-      state.errorKey = 'locationRequired';
-      render();
-      return;
-    }
-    applySituationFilters(`${state.situation} ${state.helperIntake.identification || ''} ${state.helperIntake.accessibility || ''}`);
-    state.query = searchNeed();
-    state.searched = true;
-    setPageRoute('find');
-    state.storedResults = sourceResources;
-    state.liveResults = [];
-    state.visibleResults = 20;
-    state.decisionPlan = null;
-    persistHelper();
-    persistShared();
-    render();
-    void searchNearby();
+    runLocalHelpSearch(helperSearchInput());
   }
   if (target.matches('[data-clear-intake]')) {
     state.helperIntake = {};
@@ -2232,21 +2278,13 @@ app.addEventListener('click', async event => {
   }
   if (target.matches('[data-remove-plan]')) {
     state.helperPlan = removePlanResource(state.helperPlan, target.dataset.removePlan);
-    state.decisionPlan = null;
-    state.planStatus = state.helperPlan.length ? 'idle' : 'missing';
     persistHelper();
     render();
   }
   if (target.matches('[data-clear-plan]')) {
     state.helperPlan = [];
-    state.decisionPlan = null;
-    state.planStatus = 'missing';
     persistHelper();
     render();
-  }
-  if (target.matches('[data-retry-plan]')) {
-    const form = document.querySelector('#actionPlanForm');
-    if (form) void generateDecisionPlan(form);
   }
   if (target.matches('[data-copy-plan]')) {
     try {

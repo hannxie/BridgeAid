@@ -1,11 +1,11 @@
-const CACHE = 'bridgeaid-v13';
+const CACHE = 'bridgeaid-v15';
 const ASSETS = [
   './',
   './index.html',
-  './css/styles.css?v=13',
-  './js/app.js?v=13',
-  './js/localization.js?v=13',
-  './data/resources.js?v=13',
+  './css/styles.css?v=15',
+  './js/app.js?v=15',
+  './js/localization.js?v=15',
+  './data/resources.js?v=15',
   './manifest.webmanifest',
   './js/services/storage.js',
   './js/services/resource-service.js?v=13',
@@ -16,7 +16,6 @@ const ASSETS = [
   './js/services/orchestrator.js',
   './js/services/html-service.js',
   './js/services/helper-plan-service.js',
-  './js/services/decision-plan-service.js',
   './js/services/situation-service.js',
   './js/services/eligibility-data-service.js',
   './js/services/grounded-assistant.js?v=13',
@@ -26,7 +25,10 @@ const ASSETS = [
   './js/services/places-enrichment-service.js',
   './js/services/performance-service.js',
   './js/services/route-service.js',
-  './js/services/search-lifecycle-service.js'
+  './js/services/search-lifecycle-service.js',
+  './js/services/local-search-workflow.js?v=15',
+  './js/services/nationwide-eligibility-service.js?v=15',
+  './data/nationwide-eligibility-research.js'
 ];
 self.addEventListener('install', e => e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS))));
 self.addEventListener('activate', e => e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k))))));

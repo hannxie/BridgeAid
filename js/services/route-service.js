@@ -3,7 +3,6 @@ export const PAGE_ROUTES = Object.freeze({
   find: 'find-help',
   nationwide: 'nationwide',
   eligibility: 'eligibility',
-  actionPlan: 'action-plan',
   registration: 'registration',
   saved: 'saved',
   privacy: 'privacy'
