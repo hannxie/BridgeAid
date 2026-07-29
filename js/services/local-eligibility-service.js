@@ -1,5 +1,5 @@
 import { evaluateEligibility } from './eligibility-service.js';
-import { normalizeResource } from './resource-service.js?v=11';
+import { normalizeResource } from './resource-service.js?v=12';
 
 function locationTokens(value) {
   return String(value || '')
@@ -47,12 +47,24 @@ export function servesLocation(resource, location) {
 export function localProgramForResource(resource, location) {
   if (!resource) return null;
   const normalized = normalizeResource(resource);
-  const inServiceArea = normalized.scope === 'nationwide-online' || servesLocation(resource, location);
+  const hasPublishedServiceArea = Boolean(
+    normalized.city
+    || normalized.county
+    || normalized.zip
+    || normalized.serviceAreas.length
+    || normalized.serviceAreaZipRanges.length
+    || normalized.serviceAreaZipPrefixes.length
+  );
+  const nearbyDiscoveredResource = normalized.scope === 'location'
+    && normalized.distance !== null
+    && !hasPublishedServiceArea;
+  const inServiceArea = normalized.scope === 'nationwide-online'
+    || servesLocation(resource, location)
+    || nearbyDiscoveredResource;
   const verifiedRules = normalized.eligibilityRules.length > 0
     && Boolean(resource.eligibilitySourceUrl || normalized.sourceUrls[0])
     && inServiceArea;
-  const publishedStatus = normalized.eligibilityStatus
-    || (!normalized.eligibilityRules.length && resource.eligibilitySourceUrl ? 'no_restrictions_listed' : '');
+  const publishedStatus = normalized.eligibilityStatus;
   return {
     ...normalized,
     localEligibilityVerified: verifiedRules,
@@ -86,16 +98,27 @@ export function evaluateLocalEligibility(resource, location, answers = {}) {
   if (!program.localEligibilityVerified) {
     const noListedRequirements = program.inServiceArea
       && ['no_restrictions_listed', 'open'].includes(program.eligibilityStatus);
+    const technicalFailure = program.eligibilityResearchStatus === 'technical_failure';
+    const needsReview = program.eligibilityResearchStatus === 'ambiguous_review';
+    const outOfArea = !program.inServiceArea;
     return {
-      status: noListedRequirements
-        ? 'No eligibility requirements published'
-        : 'Eligibility information temporarily unavailable',
+      status: outOfArea
+        ? 'Program does not serve this location'
+        : noListedRequirements
+          ? 'No eligibility requirements published'
+          : technicalFailure
+            ? 'Eligibility information temporarily unavailable'
+            : needsReview
+              ? 'Eligibility details require review'
+              : 'Eligibility research pending',
       passed: [],
       failed: [],
-      missing: program.inServiceArea
-        ? ['published structured eligibility rules']
-        : ['verified local service area'],
-      reasons: [],
+      missing: outOfArea
+        ? ['verified local service area']
+        : noListedRequirements
+          ? []
+          : ['published structured eligibility rules'],
+      reasons: program.eligibilityResearchReason ? [program.eligibilityResearchReason] : [],
       program
     };
   }

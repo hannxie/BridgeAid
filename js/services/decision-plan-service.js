@@ -1,5 +1,5 @@
-import { normalizeResource, stableResourceComparator } from './resource-service.js?v=11';
-import { resourceScheduleState } from './schedule-service.js';
+import { normalizeResource, stableResourceComparator } from './resource-service.js?v=12';
+import { resourceAvailabilityAt, resourceScheduleState } from './schedule-service.js';
 
 const DEFAULT_CONSTRAINTS = Object.freeze({
   urgency: 'today',
@@ -76,10 +76,13 @@ function completionConfidence(resource) {
   };
 }
 
-function feasibility(resource, constraints, now) {
+function feasibility(resource, constraints, now, situationConstraints = {}) {
   const reasons = [];
   const schedule = resourceScheduleState(resource, now);
   const cost = estimatedTravelCost(resource, constraints.transportation);
+  const requestedAvailability = situationConstraints.requestedInstant
+    ? resourceAvailabilityAt(resource, situationConstraints.requestedInstant)
+    : null;
   if (Number.isFinite(resource.distance) && resource.distance > constraints.maxDistance) {
     reasons.push(`outside the ${constraints.maxDistance}-mile travel limit`);
   }
@@ -102,12 +105,24 @@ function feasibility(resource, constraints, now) {
     reasons.push('childcare support is not published');
   }
   if (resource.temporaryClosure) reasons.push('a temporary closure is published');
-  return { feasible: reasons.length === 0, reasons, schedule, cost };
+  if (requestedAvailability?.confirmed && !requestedAvailability.available
+    && constraints.urgency === 'immediate') {
+    reasons.push('not available at the requested time');
+  }
+  if (situationConstraints.appointmentRestriction && resource.appointmentOnly) {
+    reasons.push('an appointment is required');
+  }
+  return { feasible: reasons.length === 0, reasons, schedule, requestedAvailability, cost };
 }
 
-function resourceScore(resource, constraints, now) {
+function resourceScore(resource, constraints, now, situationConstraints = {}) {
   const schedule = resourceScheduleState(resource, now);
   let score = Number(resource._rank || 0);
+  const requestedAvailability = situationConstraints.requestedInstant
+    ? resourceAvailabilityAt(resource, situationConstraints.requestedInstant)
+    : null;
+  if (requestedAvailability?.available && requestedAvailability.confirmed) score += 80;
+  if (requestedAvailability?.confirmed && !requestedAvailability.available) score -= 70;
   if (schedule.openNow) score += constraints.urgency === 'immediate' ? 50 : 20;
   if (resource.applicationMethods.includes('online')) score += 15;
   if (resource.applicationDeadline) score += 12;
@@ -116,10 +131,26 @@ function resourceScore(resource, constraints, now) {
   return score;
 }
 
-function actionForResource(resource, schedule, constraints) {
+function actionForResource(resource, schedule, constraints, mode, requestedAvailability) {
   const online = resource.applicationMethods.includes('online')
     && (resource.registrationUrl || resource.applicationLinks.some(link => link.type === 'application'));
   const travel = travelEstimate(resource, constraints.transportation);
+  if (mode === 'helper' && resource.phone) {
+    return {
+      type: 'phone',
+      action: `Call ${resource.name} to confirm availability, program-specific eligibility, documents, and the next usable time.`,
+      timing: constraints.availableTimes || 'During published phone hours',
+      travel: ''
+    };
+  }
+  if (requestedAvailability?.available && resource.address) {
+    return {
+      type: 'visit',
+      action: `Go to ${resource.name} for the requested service window after a final availability check.`,
+      timing: 'At the requested time',
+      travel
+    };
+  }
   if (online) {
     return {
       type: 'online',
@@ -155,13 +186,15 @@ function actionForResource(resource, schedule, constraints) {
 export function buildDecisionPlan(resources = [], constraints = {}, options = {}) {
   const normalizedConstraints = normalizePlanConstraints(constraints);
   const now = options.now || new Date();
+  const mode = options.mode === 'helper' ? 'helper' : 'self';
+  const situationConstraints = options.situationConstraints || {};
   const candidates = resources
     .map(resource => normalizeResource(resource))
     .filter(resource => resource.id)
     .map(resource => ({
       resource,
-      feasibility: feasibility(resource, normalizedConstraints, now),
-      score: resourceScore(resource, normalizedConstraints, now)
+      feasibility: feasibility(resource, normalizedConstraints, now, situationConstraints),
+      score: resourceScore(resource, normalizedConstraints, now, situationConstraints)
     }));
   const excluded = candidates
     .filter(candidate => !candidate.feasibility.feasible)
@@ -176,7 +209,7 @@ export function buildDecisionPlan(resources = [], constraints = {}, options = {}
     .slice(0, Math.max(1, Number(options.maximumResources) || 5));
   const documents = [...new Set(selected.flatMap(candidate => candidate.resource.requiredDocuments).filter(Boolean))];
   const steps = [];
-  if (documents.length) {
+  if (documents.length && mode === 'helper') {
     steps.push({
       type: 'documents',
       title: 'Gather reusable documents once',
@@ -189,7 +222,13 @@ export function buildDecisionPlan(resources = [], constraints = {}, options = {}
     });
   }
   for (const candidate of selected) {
-    const action = actionForResource(candidate.resource, candidate.feasibility.schedule, normalizedConstraints);
+    const action = actionForResource(
+      candidate.resource,
+      candidate.feasibility.schedule,
+      normalizedConstraints,
+      mode,
+      candidate.feasibility.requestedAvailability
+    );
     steps.push({
       resourceId: candidate.resource.id,
       title: candidate.resource.name,
@@ -200,6 +239,18 @@ export function buildDecisionPlan(resources = [], constraints = {}, options = {}
           ? 'The published schedule and entered travel constraints make this a practical early stop.'
           : 'Availability or requirements need confirmation before travel.',
       completionConfidence: completionConfidence(candidate.resource)
+    });
+  }
+  if (documents.length && mode === 'self') {
+    steps.push({
+      type: 'documents',
+      title: 'Prepare what to bring next',
+      action: `After the immediate step, gather: ${documents.join('; ')}.`,
+      reason: 'Immediate, low-friction actions stay first; documents are grouped for later applications.',
+      completionConfidence: {
+        label: 'Higher confidence',
+        reason: 'These documents are published by the selected providers; each provider may request additional proof.'
+      }
     });
   }
   const nearbyStops = selected
@@ -218,9 +269,12 @@ export function buildDecisionPlan(resources = [], constraints = {}, options = {}
   return {
     generatedAt: now.toISOString(),
     constraints: normalizedConstraints,
+    mode,
     steps,
     excluded,
     tradeoffs,
-    explanation: 'Online and document steps come first, followed by feasible time-sensitive contacts and visits. No step guarantees acceptance or service availability.'
+    explanation: mode === 'helper'
+      ? 'Coordination starts with reusable documents and provider confirmation calls before travel. No step guarantees acceptance or service availability.'
+      : 'Immediate visits or verified online actions stay first, with reusable documents grouped afterward. No step guarantees acceptance or service availability.'
   };
 }

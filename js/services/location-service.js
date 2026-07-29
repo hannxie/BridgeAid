@@ -120,7 +120,11 @@ export function buildOverpassQuery(lat, lng, radiusMiles = 5) {
 export function inferCategory(tags = {}) {
   const text = [tags.name, tags.description, tags.social_facility, tags.amenity, tags.healthcare, tags.office, tags.operator]
     .filter(Boolean).join(' ').toLowerCase();
-  if (/food|pantry|meal|hunger|soup|bank/.test(text)) return 'food';
+  const foodProgramText = [tags.name, tags.operator, tags.social_facility, tags['service:description']]
+    .filter(Boolean).join(' ').toLowerCase();
+  if (tags.amenity === 'food_bank'
+    || /food[_ ]bank|food pantry|soup kitchen|free meals?|meal (?:site|program|service)|hunger relief/.test(foodProgramText)) return 'food';
+  if (tags.amenity === 'community_centre' && !tags.social_facility) return 'family';
   if (/shelter|homeless|housing|refuge|group_home/.test(text)) return 'shelter';
   if (/safe place|domestic violence/.test(text)) return 'safe';
   if (/mental|counsel|behavior|addiction|substance/.test(text)) return 'mental';
@@ -153,6 +157,9 @@ export function normalizeOsmElement(element, origin) {
     lat,
     lng,
     address,
+    city: tags['addr:city'] || tags['addr:place'] || '',
+    state: tags['addr:state'] || '',
+    zip: tags['addr:postcode'] || '',
     phone: tags.phone || tags['contact:phone'] || '',
     website: tags.website || tags['contact:website'] || '',
     hours: tags.opening_hours || '',
@@ -166,7 +173,8 @@ export function normalizeOsmElement(element, origin) {
     walkInStatus: tags.appointment === 'no' || tags.reservation === 'no' ? 'Walk-ins accepted' : '',
     accessibility: tags.wheelchair === 'yes' ? ['Wheelchair accessible'] : [],
     languages,
-    eligibilityStatus: 'temporarily_unavailable',
+    eligibilityStatus: 'varies',
+    eligibilityResearchStatus: 'pending',
     verificationStatus: 'Community-sourced — confirm with organization',
     confidence: tags.website && tags.phone ? 0.7 : 0.45,
     dateDiscovered: new Date().toISOString(),

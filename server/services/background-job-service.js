@@ -79,6 +79,72 @@ export function createDiscoveryJobs(coverage = {}, targets = [], now = new Date(
   }));
 }
 
+export function createEligibilityResearchJobs(resources = [], now = new Date(), maximum = 25) {
+  return resources
+    .filter(resource => resource?.id)
+    .filter(resource => {
+      const verifiedAt = Date.parse(resource.eligibilityLastVerified || '');
+      const stale = !Number.isFinite(verifiedAt) || now.getTime() - verifiedAt > 90 * 86400000;
+      return stale
+        || !Array.isArray(resource.eligibilityRules)
+        || (!resource.eligibilityRules.length
+          && !['no_restrictions_listed', 'open'].includes(resource.eligibilityStatus));
+    })
+    .sort((a, b) => {
+      const aMissing = !a.eligibilityRules?.length ? 0 : 1;
+      const bMissing = !b.eligibilityRules?.length ? 0 : 1;
+      return aMissing - bMissing || String(a.id).localeCompare(String(b.id));
+    })
+    .slice(0, Math.max(0, Number(maximum) || 0))
+    .map((resource, index) => ({
+      ...createJob('eligibility-extraction', {
+        resourceId: String(resource.id),
+        organizationName: resource.organizationName || resource.name,
+        programName: resource.programName || resource.name,
+        sourceSequence: [
+          'official-program-page',
+          'official-eligibility-page',
+          'application-or-intake-form',
+          'official-faq',
+          'program-guidelines',
+          'required-documents-page',
+          'trusted-government-or-nonprofit-directory',
+          'recent-official-announcement'
+        ],
+        sourceUrls: [
+          resource.eligibilitySourceUrl,
+          resource.applicationSourceUrl,
+          ...(resource.sourceUrls || [])
+        ].filter(Boolean),
+        requiredOutcomeFields: [
+          'serviceArea', 'residency', 'age', 'income', 'householdSize', 'housingStatus',
+          'insurance', 'employmentOrStudentStatus', 'disabilityOrVeteranStatus',
+          'documents', 'exceptions', 'deadlines', 'applicationLink'
+        ]
+      }, now),
+      id: `eligibility-${resource.id}-${now.getTime()}-${index}`,
+      priority: resource.eligibilityRules?.length ? 'normal' : 'high'
+    }));
+}
+
+export function recordEligibilityResearchOutcome(job, outcome, now = new Date()) {
+  const allowed = ['rules_extracted', 'no_public_restrictions', 'ambiguous_review', 'source_not_found', 'technical_failure'];
+  if (!allowed.includes(outcome?.status)) throw new Error('Unsupported eligibility research outcome.');
+  const completed = ['rules_extracted', 'no_public_restrictions', 'source_not_found'].includes(outcome.status);
+  return {
+    ...job,
+    status: completed ? 'completed' : outcome.status === 'ambiguous_review' ? 'needs_review' : 'failed',
+    researchOutcome: {
+      status: outcome.status,
+      rules: Array.isArray(outcome.rules) ? outcome.rules : [],
+      evidence: Array.isArray(outcome.evidence) ? outcome.evidence : [],
+      reason: String(outcome.reason || ''),
+      checkedAt: now.toISOString()
+    },
+    updatedAt: now.toISOString()
+  };
+}
+
 export function recordJobFailure(job, error, now = new Date()) {
   const attempts = job.attempts + 1;
   const retryMinutes = Math.min(60, 2 ** attempts);

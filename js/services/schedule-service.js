@@ -168,6 +168,108 @@ function periodContains(period, minutes, fromPreviousDay = false) {
   return fromPreviousDay ? minutes < close : minutes >= open;
 }
 
+function monthlyRuleMatches(rule, current) {
+  if (rule.frequency !== 'monthly' || !rule.weekday || !Array.isArray(rule.ordinal)) return false;
+  if (current.day !== String(rule.weekday).toLowerCase()) return false;
+  const dayOfMonth = Number(current.date.slice(-2));
+  const ordinal = Math.ceil(dayOfMonth / 7);
+  return rule.ordinal.map(Number).includes(ordinal);
+}
+
+function scheduleRuleAvailability(resource, current) {
+  if (!resource.scheduleRules?.length) return null;
+  const matchingDateRules = resource.scheduleRules.filter(rule => monthlyRuleMatches(rule, current));
+  if (!matchingDateRules.length) {
+    return {
+      code: 'confirmed_unavailable',
+      available: false,
+      confirmed: true,
+      reason: 'The verified distribution schedule does not serve on the requested date.'
+    };
+  }
+  const available = matchingDateRules.some(rule => periodContains(rule, current.minutes));
+  return available
+    ? {
+      code: 'confirmed_distribution',
+      available: true,
+      confirmed: true,
+      reason: 'The requested time is inside the verified distribution window.'
+    }
+    : {
+      code: 'confirmed_unavailable',
+      available: false,
+      confirmed: true,
+      reason: 'The distribution occurs that day, but not at the requested time.'
+    };
+}
+
+export function resourceAvailabilityAt(resource, instant) {
+  if (!(instant instanceof Date) || Number.isNaN(instant.getTime())) {
+    return { code: 'uncertain', available: false, confirmed: false, reason: 'No exact requested date and time were available.' };
+  }
+  const timeZone = resource.timeZone || 'America/Los_Angeles';
+  const current = localParts(instant, timeZone);
+  if (resource.temporaryClosure) {
+    return { code: 'temporary_closed', available: false, confirmed: true, timeZone, reason: 'A verified temporary closure covers this resource.' };
+  }
+  if (resource.onlineAlwaysAvailable && !resource.weeklyHours) {
+    return { code: 'confirmed_available', available: true, confirmed: true, timeZone, reason: 'The verified online service is available at all times.' };
+  }
+  if (resource.discoveryStatus === 'verification_pending'
+    || /community-sourced/i.test(String(resource.verificationStatus || ''))) {
+    return {
+      code: 'uncertain',
+      available: false,
+      confirmed: false,
+      timeZone,
+      reason: 'Community-sourced hours have not yet been confirmed with the provider.'
+    };
+  }
+  const ruleState = scheduleRuleAvailability(resource, current);
+  if (ruleState) return { ...ruleState, timeZone };
+  if (!resource.weeklyHours || typeof resource.weeklyHours !== 'object') {
+    return {
+      code: 'uncertain',
+      available: false,
+      confirmed: false,
+      timeZone,
+      reason: 'Verified hours for the exact requested time are not published.'
+    };
+  }
+  const todayIndex = WEEK_DAYS.indexOf(current.day);
+  const previousDay = WEEK_DAYS[(todayIndex + 6) % 7];
+  const todayPeriods = periodsFor(resource, current.day, current.date) || [];
+  const previousPeriods = periodsFor(resource, previousDay) || [];
+  const withinHours = todayPeriods.some(period => periodContains(period, current.minutes))
+    || previousPeriods.some(period => periodContains(period, current.minutes, true));
+  if (resource.appointmentOnly) {
+    return {
+      code: 'appointment_required',
+      available: false,
+      confirmed: true,
+      timeZone,
+      reason: withinHours
+        ? 'The location is open then, but service requires an appointment.'
+        : 'The service requires an appointment and is not confirmed for the requested time.'
+    };
+  }
+  return withinHours
+    ? {
+      code: 'confirmed_available',
+      available: true,
+      confirmed: true,
+      timeZone,
+      reason: 'The requested time is inside the verified service hours.'
+    }
+    : {
+      code: 'confirmed_unavailable',
+      available: false,
+      confirmed: true,
+      timeZone,
+      reason: 'The verified schedule shows the resource closed at the requested time.'
+    };
+}
+
 function nextOpeningMinutes(resource, current) {
   const todayIndex = WEEK_DAYS.indexOf(current.day);
   for (let offset = 0; offset <= 7; offset += 1) {

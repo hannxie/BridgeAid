@@ -7,8 +7,8 @@ export function questionsForRules(rules = [], answers = {}) {
 export function evaluateEligibility(rules = [], answers = {}) {
   if (!rules.length) {
     return {
-      status: 'Eligibility information temporarily unavailable',
-      reasons: ['Current resource-specific eligibility rules could not be verified.'],
+      status: 'No eligibility requirements published',
+      reasons: ['No public program restrictions are stored for this program. Contact the provider to confirm.'],
       missing: []
     };
   }

@@ -3,8 +3,8 @@ import {
   keywordMap,
   resources as sourceResources,
   nationwideResources
-} from '../data/resources.js?v=11';
-import { translate, detectMessageLanguage, requestedLanguage } from './localization.js?v=11';
+} from '../data/resources.js?v=12';
+import { translate, detectMessageLanguage, requestedLanguage } from './localization.js?v=12';
 import {
   safeStorageGet,
   safeStorageSet,
@@ -26,18 +26,19 @@ import {
   resourceIsFresh,
   freshResources,
   searchSignature
-} from './services/resource-service.js?v=11';
+} from './services/resource-service.js?v=12';
 import {
   geocodeLocation,
   fetchNearbyResources,
   geocodeResourceAddresses,
   suggestLocations
-} from './services/location-service.js?v=11';
+} from './services/location-service.js?v=12';
 import {
   formatScheduleTime,
   resourceScheduleState,
   weeklyScheduleRows
 } from './services/schedule-service.js';
+import { parseSituation } from './services/situation-service.js';
 import {
   enrichWithConfiguredPlaces,
   placesApiKey
@@ -52,13 +53,13 @@ import {
   localEligibilityQuestions,
   evaluateLocalEligibility,
   servesLocation
-} from './services/local-eligibility-service.js?v=11';
+} from './services/local-eligibility-service.js?v=12';
 import { registrationGuidance } from './services/registration-service.js';
 import {
   answerGroundedAssistant,
   assistantCategory,
   locationFromMessage
-} from './services/grounded-assistant.js?v=11';
+} from './services/grounded-assistant.js?v=12';
 import {
   createCorrectionReport,
   queueCorrection,
@@ -70,10 +71,12 @@ import {
   addPlanResource,
   updatePlanStatus,
   updatePlanNote,
+  updatePlanQuestions,
   removePlanResource,
   clearPlan as emptyPlan
 } from './services/helper-plan-service.js';
 import { buildDecisionPlan, normalizePlanConstraints } from './services/decision-plan-service.js';
+import { exportEligibilityCsv } from './services/eligibility-data-service.js';
 
 const STORAGE = {
   mode: 'bridgeaid-mode',
@@ -84,7 +87,7 @@ const STORAGE = {
   saved: 'ba-saved',
   helperIntake: 'bridgeaid-helper-intake',
   helperPlan: 'bridgeaid-helper-plan',
-  cache: 'bridgeaid-resource-cache',
+  cache: 'bridgeaid-resource-cache-v12',
   searches: 'bridgeaid-saved-searches',
   corrections: 'bridgeaid-correction-queue'
 };
@@ -137,6 +140,7 @@ const state = {
   category: '',
   otherNeed: '',
   situation: '',
+  situationConstraints: parseSituation(''),
   query: '',
   location: typeof initialLocation === 'string' ? initialLocation : '',
   coordinates: null,
@@ -288,6 +292,8 @@ function desiredCategories() {
     : [];
   return [...new Set([
     ...structured,
+    ...(Array.isArray(state.helperIntake.serviceCategories) ? state.helperIntake.serviceCategories : []),
+    ...(state.situationConstraints.categories || []),
     ...detectCategories(`${state.otherNeed} ${state.situation} ${state.helperIntake.situation || ''}`)
   ])].sort();
 }
@@ -316,19 +322,27 @@ function mergeSearchResults(existing, incoming, desired = []) {
   return rankResources(mergeDuplicates([
     ...(existing || []),
     ...(incoming || [])
-  ]), { categories: desired });
+  ]), { categories: desired, constraints: state.situationConstraints });
 }
 
 function applySituationFilters(text) {
   const value = String(text || '').toLowerCase();
+  state.situationConstraints = parseSituation(text, {
+    location: state.location || state.helperIntake.location,
+    coordinates: state.coordinates
+  });
   if (/no (?:photo )?(?:id|identification)|without (?:an? )?(?:id|identification)|do(?:es)? not have (?:an? )?(?:id|identification)|sin identificaci[oó]n/.test(value)) {
     state.filters.noId = true;
   }
   if (/tonight|today|this evening|esta noche|hoy|今晚|今天/.test(value)) {
-    state.filters.availableToday = true;
+    if (!state.situationConstraints.requestedInstant) state.filters.availableToday = true;
   }
   if (/wheelchair|silla de ruedas|轮椅/.test(value)) {
     state.filters.accessible = true;
+  }
+  if (state.situationConstraints.walkInOnly) state.filters.walkIn = true;
+  if (Number.isFinite(state.situationConstraints.maxDistance)) {
+    state.radiusValue = Math.min(state.radiusValue, state.situationConstraints.maxDistance);
   }
 }
 
@@ -364,7 +378,7 @@ function staticMatches() {
       || wanted.includes(resource.category)
       || resource.services.some(service => wanted.includes(service)));
   }
-  return rankResources(rows, { categories: wanted });
+  return rankResources(rows, { categories: wanted, constraints: state.situationConstraints });
 }
 
 function allResults() {
@@ -377,7 +391,11 @@ function allResults() {
         localEligibilityVerified: Boolean(localProgramForResource(normalized, state.location)?.localEligibilityVerified)
       };
     });
-  const filtered = filterResources(combined, {
+  const ranked = rankResources(combined, {
+    categories: desiredCategories(),
+    constraints: state.situationConstraints
+  });
+  const filtered = filterResources(ranked, {
     ...state.filters,
     radius: effectiveRadiusMiles()
   });
@@ -557,6 +575,9 @@ function helperField(name, labelKey, type = 'text', options = [], required = fal
 
 function helperIntake() {
   const yesNo = [{ value: 'yes', key: 'yes' }, { value: 'no', key: 'no' }, { value: 'unsure', key: 'unsure' }];
+  const selectedCategories = Array.isArray(state.helperIntake.serviceCategories)
+    ? state.helperIntake.serviceCategories
+    : [state.helperIntake.serviceCategory].filter(Boolean);
   return `<section class="intake-card" aria-labelledby="intake-title">
     <div class="section-head">
       <div><span class="step-label">${tr('helperIntakeStep')}</span><h2 id="intake-title">${tr('helperIntakeTitle')}</h2></div>
@@ -564,15 +585,23 @@ function helperIntake() {
     </div>
     <p class="privacy-notice">${tr('privacyNotice')}</p>
     <p class="helper-explanation">${tr('sensitiveWarning')}</p>
+    <div class="helper-intake-steps">
+      <p><strong>1.</strong> ${tr('helperLocationQuestion')}</p>
+      <p><strong>2.</strong> ${tr('helperSupportQuestion')}</p>
+      <p><strong>3.</strong> ${tr('helperAuthorizedDescription')}</p>
+    </div>
     <div class="intake-grid">
-      ${helperField('serviceCategory', 'needLabel', 'select', CATEGORY_CONFIG
-        .filter(item => item.id !== 'all')
-        .map(item => ({ value: item.id, key: item.key })), true)}
-      ${helperField('immediateNeed', 'immediateNeed', 'text', [], true)}
       <label><span>${tr('location')} <strong class="required-label">${tr('required')}</strong></span>
         <input id="helperLocationInput" name="location" value="${attr(state.helperIntake.location || '')}" data-intake required aria-required="true" autocomplete="off">
         <div data-location-suggestions data-location-target="helper">${locationSuggestionMarkup('helper')}</div>
       </label>
+      <fieldset class="helper-category-picker">
+        <legend>${tr('helperSupportTypes')} <strong class="required-label">${tr('required')}</strong></legend>
+        ${CATEGORY_CONFIG.filter(item => item.id !== 'all').map(item => `<label class="filter-check">
+          <input type="checkbox" data-intake-category value="${item.id}" ${selectedCategories.includes(item.id) ? 'checked' : ''}>
+          <span>${categoryIcon(item.id)} ${tr(item.key)}</span>
+        </label>`).join('')}
+      </fieldset>
       ${helperField('safetyTonight', 'safetyTonight', 'select', [
         { value: 'safe', key: 'safe' },
         { value: 'notSafe', key: 'notSafe' },
@@ -612,8 +641,8 @@ function helperIntake() {
     <label class="notes-field"><span>${tr('additionalNotes')} <small>${tr('localDeviceNote')}</small></span>
       <textarea name="notes" data-intake rows="3">${esc(state.helperIntake.notes || '')}</textarea>
     </label>
-    <label class="notes-field"><span>${tr('situationLabel')} <small>${tr('optional')}</small></span>
-      <textarea name="situation" data-intake rows="3" placeholder="${attr(tr('situationPlaceholder'))}">${esc(state.helperIntake.situation || '')}</textarea>
+    <label class="notes-field"><span>${tr('helperSituationLabel')} <small>${tr('optional')}</small></span>
+      <textarea name="situation" data-intake rows="3" placeholder="${attr(tr('helperSituationPlaceholder'))}">${esc(state.helperIntake.situation || '')}</textarea>
     </label>
     ${state.helperIntake.safetyTonight === 'notSafe' ? `<div class="danger-notice">${tr('safetySupportNote')}</div>` : ''}
     <button class="primary" data-helper-search>${tr('buildOptions')}</button>
@@ -731,6 +760,41 @@ function walkingDetails(resource) {
   });
 }
 
+function requestedAvailabilityMarkup(resource) {
+  const availability = resource._availabilityAtRequest;
+  if (!availability || !state.situationConstraints.requestedInstant) return '';
+  const requested = new Intl.DateTimeFormat(state.lang, {
+    timeZone: state.situationConstraints.timeZone,
+    dateStyle: 'medium',
+    timeStyle: 'short'
+  }).format(state.situationConstraints.requestedInstant);
+  const key = availability.available && availability.confirmed
+    ? 'confirmedAtRequestedTime'
+    : availability.confirmed
+      ? 'unavailableAtRequestedTime'
+      : 'uncertainAtRequestedTime';
+  return `<div class="requested-availability ${availability.available ? 'available' : availability.confirmed ? 'unavailable' : 'uncertain'}">
+    <strong>${tr(key, { time: requested })}</strong>
+    <span>${esc(availability.reason)}</span>
+  </div>`;
+}
+
+function eligibilityDisplay(program) {
+  if (!program) return tr('eligibilityResearchPending');
+  if (program.localEligibilityVerified) return program.eligibilitySummary;
+  if (['no_restrictions_listed', 'open'].includes(program.eligibilityStatus)) {
+    return program.eligibilitySummary || tr('noEligibilityRequirementsExplanation');
+  }
+  if (!program.inServiceArea) return tr('eligibilityOutOfArea');
+  if (program.eligibilityResearchStatus === 'technical_failure') {
+    return tr('eligibilityTemporarilyUnavailable');
+  }
+  if (program.eligibilityResearchStatus === 'ambiguous_review') {
+    return tr('eligibilityNeedsReview');
+  }
+  return tr('eligibilityResearchPending');
+}
+
 function resourceCard(raw, options = {}) {
   const resource = normalizeResource(raw, state.lang);
   const schedule = scheduleDisplay(resource);
@@ -764,16 +828,14 @@ function resourceCard(raw, options = {}) {
     </div>
     <div><h3>${esc(resource.name)}</h3>${resource.programName ? `<p class="program-name">${esc(resource.programName)}</p>` : ''}</div>
     ${resource.description ? `<p class="description">${esc(resource.description)}</p>` : ''}
+    ${resource._rankExplanation ? `<p class="rank-explanation"><strong>${tr('whyPrioritized')}:</strong> ${esc(resource._rankExplanation)}</p>` : ''}
+    ${requestedAvailabilityMarkup(resource)}
     <dl class="resource-meta">
       <dt>${tr('address')}</dt><dd>${esc(address)}</dd>
       ${walkingDetails(resource) ? `<dt>${tr('distance')}</dt><dd>${esc(walkingDetails(resource))}</dd>` : ''}
       <dt>${tr('hours')}</dt><dd>${weeklyHoursBlock(resource)}</dd>
       <dt>${tr('availability')}</dt><dd>${availabilityText(resource)}</dd>
-      <dt>${tr('eligibilitySummary')}</dt><dd>${esc(localProgram?.localEligibilityVerified
-        ? localProgram.eligibilitySummary
-        : ['no_restrictions_listed', 'open'].includes(localProgram?.eligibilityStatus)
-          ? localProgram.eligibilitySummary || tr('noEligibilityRequirementsExplanation')
-          : tr('eligibilityTemporarilyUnavailable'))}</dd>
+      <dt>${tr('eligibilitySummary')}</dt><dd>${esc(eligibilityDisplay(localProgram))}</dd>
       <dt>${tr('registrationRequirement')}</dt><dd>${esc(resource.registrationRequirement || tr('registrationUseContact'))}</dd>
     </dl>
     <p class="verification-line"><strong>${tr('lastVerified')}:</strong> ${esc(verificationDate)} · ${esc(verificationText(resource))}</p>
@@ -806,7 +868,7 @@ function comparisonPanel(resources) {
       <tbody>${selected.map(resource => `<tr>
         <th>${esc(resource.name)}</th>
         <td>${esc(resource.hours || tr('scheduleUncertain'))}</td>
-        <td>${esc(localProgramForResource(resource, state.location)?.localEligibilityVerified ? resource.eligibilitySummary : tr('eligibilityTemporarilyUnavailable'))}</td>
+        <td>${esc(eligibilityDisplay(localProgramForResource(resource, state.location)))}</td>
         <td>${esc(walkingDetails(resource) || tr('unknown'))}</td>
         <td>${esc(resource.lastVerified || resource.hoursLastVerified || tr('nonePublished'))}</td>
       </tr>`).join('')}</tbody>
@@ -820,9 +882,10 @@ function planConstraintValue(name) {
 
 function decisionPlanPanel(resources) {
   const plan = state.decisionPlan;
+  const title = state.mode === 'helper' ? tr('resourcePlan') : tr('buildActionPlan');
   return `<section class="decision-planner" aria-labelledby="decision-plan-title">
     <div class="section-head">
-      <div><span class="step-label">${tr('optional')}</span><h2 id="decision-plan-title">${tr('buildActionPlan')}</h2></div>
+      <div><span class="step-label">${tr('optional')}</span><h2 id="decision-plan-title">${title}</h2></div>
     </div>
     <p>${tr('actionPlanIntro')}</p>
     <form id="actionPlanForm" class="constraint-grid">
@@ -870,7 +933,7 @@ function findPage() {
   const visibleResources = resources.slice(0, state.visibleResults);
   return `<main id="main" class="wrap section page">
     <div class="page-head">
-      <div><span class="eyebrow">${tr('selfEyebrow')}</span><h1>${tr('searchResults')}</h1>
+      <div><span class="eyebrow">${state.mode === 'helper' ? tr('helperEyebrow') : tr('selfEyebrow')}</span><h1>${tr('searchResults')}</h1>
         ${state.searched ? `<p>${tr('resultsFor', { need: searchNeed(), location: state.location })}</p>` : `<p>${tr('noHomeResources')}</p>`}
       </div>
     </div>
@@ -901,11 +964,14 @@ function findPage() {
 
 function planText() {
   const created = state.helperPlan[0]?.planCreated || new Date().toISOString();
+  const helperNeeds = (state.helperIntake.serviceCategories || [])
+    .map(categoryLabel)
+    .join(', ') || searchNeed() || tr('notEntered');
   return [
     `BridgeAid — ${tr('resourcePlan')}`,
     `${tr('created')}: ${new Date(created).toLocaleString(state.lang)}`,
     `${tr('updated')}: ${new Date().toLocaleString(state.lang)}`,
-    `${tr('need')}: ${state.helperIntake.immediateNeed || searchNeed() || tr('notEntered')}`,
+    `${tr('need')}: ${helperNeeds}`,
     `${tr('location')}: ${state.helperIntake.location || state.location || tr('notEntered')}`,
     '',
     ...state.helperPlan.flatMap((item, index) => [
@@ -915,6 +981,7 @@ function planText() {
       item.directions ? `${tr('walkingDirections')}: ${item.directions}` : '',
       `${tr('status')}: ${tr(STATUS_KEYS[statusCode(item.status)] || 'statusNotContacted')}`,
       item.note ? `${tr('localNote')}: ${item.note}` : '',
+      item.questions ? `${tr('questionsToAsk')}: ${item.questions}` : '',
       tr('confirmOrganization'),
       ''
     ].filter(Boolean))
@@ -927,14 +994,18 @@ function statusCode(value) {
 
 function planPanel() {
   const created = state.helperPlan[0]?.planCreated;
+  const helperNeeds = (state.helperIntake.serviceCategories || [])
+    .map(categoryLabel)
+    .join(', ') || searchNeed() || tr('notEntered');
   return `<aside class="plan-panel" aria-labelledby="plan-title">
     <div class="section-head"><div><span class="step-label">${tr('planLocal', { count: state.helperPlan.length })}</span><h2 id="plan-title">${tr('resourcePlan')}</h2></div></div>
-    <p><strong>${tr('need')}:</strong> ${esc(state.helperIntake.immediateNeed || searchNeed() || tr('notEntered'))}</p>
+    <p><strong>${tr('need')}:</strong> ${esc(helperNeeds)}</p>
     <p><strong>${tr('location')}:</strong> ${esc(state.helperIntake.location || state.location || tr('notEntered'))}</p>
     ${created ? `<p class="plan-time">${tr('created')} ${esc(new Date(created).toLocaleString(state.lang))}<br>${tr('updated')} ${esc(new Date().toLocaleString(state.lang))}</p>` : ''}
     <div class="plan-items">${state.helperPlan.length ? state.helperPlan.map(planItem).join('') : `<p class="empty-plan">${tr('planEmpty')}</p>`}</div>
     <div class="plan-actions">
       <button class="secondary" data-copy-plan ${state.helperPlan.length ? '' : 'disabled'}>${tr('copyPlan')}</button>
+      <button class="secondary" data-share-plan ${state.helperPlan.length ? '' : 'disabled'}>${tr('sharePlan')}</button>
       <button class="ghost" data-print-plan ${state.helperPlan.length ? '' : 'disabled'}>${tr('print')}</button>
       <button class="danger-button" data-clear-plan ${state.helperPlan.length || Object.keys(state.helperIntake).length ? '' : 'disabled'}>${tr('clearPlan')}</button>
     </div>
@@ -950,6 +1021,8 @@ function planItem(item) {
       ${STATUS_CODES.map(option => `<option value="${option}" ${code === option ? 'selected' : ''}>${tr(STATUS_KEYS[option])}</option>`).join('')}
     </select></label>
     <label>${tr('localNote')}<textarea rows="2" data-plan-note="${attr(item.id)}" placeholder="${attr(tr('localNotePlaceholder'))}">${esc(item.note || '')}</textarea></label>
+    <label>${tr('questionsToAsk')}<textarea rows="2" data-plan-questions="${attr(item.id)}" placeholder="${attr(tr('questionsToAskPlaceholder'))}">${esc(item.questions || '')}</textarea></label>
+    <details><summary>${tr('callingScript')}</summary><p>${tr('callingScriptText', { program: item.name })}</p></details>
     <button class="text-action" data-remove-plan="${attr(item.id)}">${tr('remove')}</button>
   </article>`;
 }
@@ -958,7 +1031,9 @@ function nationwideCard(raw) {
   const resource = normalizeResource(raw, state.lang);
   const primaryLink = resource.applicationLinks[0];
   const website = safeUrl(primaryLink?.url || resource.officialWebsite || resource.website);
-  const eligibilityLabel = resource.requiresLocalProvider
+  const eligibilityLabel = resource.eligibilityStatus === 'structured'
+    ? resource.eligibilitySummary
+    : resource.requiresLocalProvider
     ? tr('onlineEligibilityLocalProvider')
     : resource.eligibilityStatus === 'open'
       ? tr('onlineEligibilityOpen')
@@ -974,6 +1049,8 @@ function nationwideCard(raw) {
       <dt>${tr('whoItHelps')}</dt><dd>${esc(resource.whoItHelps || resource.eligibilitySummary)}</dd>
       <dt>${tr('eligibilitySummary')}</dt><dd>${esc(eligibilityLabel)}</dd>
       <dt>${tr('waysToApply')}</dt><dd>${esc(applicationMethods(resource.applicationMethods) || tr('confirmOrganization'))}</dd>
+      <dt>${tr('cost')}</dt><dd>${esc(resource.freeStatus || tr('confirmOrganization'))}</dd>
+      ${resource.applicationDeadline ? `<dt>${tr('applicationDeadline')}</dt><dd>${esc(resource.applicationDeadline)}</dd>` : ''}
       <dt>${tr('documents')}</dt><dd>${resource.requiredDocuments.length
         ? `<ul>${resource.requiredDocuments.map(item => `<li>${esc(item)}</li>`).join('')}</ul>`
         : esc(tr('nonePublished'))}</dd>
@@ -1022,6 +1099,7 @@ function nationwidePage() {
       <label><span>${tr('onlineEligibilityFilter')}</span><select data-online-filter="eligibility">
         <option value="all">${tr('filterAll')}</option>
         <option value="open" ${state.onlineFilters.eligibility === 'open' ? 'selected' : ''}>${tr('onlineEligibilityOpen')}</option>
+        <option value="structured" ${state.onlineFilters.eligibility === 'structured' ? 'selected' : ''}>${tr('onlineEligibilityStructured')}</option>
         <option value="varies" ${state.onlineFilters.eligibility === 'varies' ? 'selected' : ''}>${tr('onlineEligibilityVaries')}</option>
         <option value="localProvider" ${state.onlineFilters.eligibility === 'localProvider' ? 'selected' : ''}>${tr('onlineEligibilityLocalProvider')}</option>
       </select></label>
@@ -1138,11 +1216,11 @@ function eligibilityField(question, answer) {
 }
 
 function eligibilityPage() {
-  const resources = state.searched
-    ? allResults()
-    : freshResources(sourceResources
-      .filter(resource => resource.scope !== 'nationwide-online'))
-      .map(resource => normalizeResource(resource, state.lang));
+  const resources = mergeDuplicates([
+    ...(state.searched ? allResults() : []),
+    ...freshResources(sourceResources
+      .filter(resource => resource.scope !== 'provider-directory'))
+  ]).map(resource => normalizeResource(resource, state.lang));
   const selected = resourceById(state.eligibility.resourceId);
   const questions = selected
     ? localEligibilityQuestions(selected, state.eligibility.location, state.eligibility.answers)
@@ -1156,6 +1234,7 @@ function eligibilityPage() {
     <span class="eyebrow">${tr('eligibilityEyebrow')}</span>
     <h1>${tr('eligibilityTitle')}</h1>
     <p class="lead">${tr('eligibilityIntro')}</p>
+    <button class="ghost admin-export" data-export-eligibility>${tr('exportEligibilityCsv')}</button>
     ${statusMessages()}
     <section class="eligibility-workspace">
       <div class="eligibility-setup">
@@ -1195,6 +1274,9 @@ function statusTranslation(status) {
     'Possibly eligible': 'possiblyEligible',
     'Likely not eligible': 'likelyNotEligible',
     'No eligibility requirements published': 'noEligibilityRequirementsListed',
+    'Eligibility research pending': 'eligibilityResearchPending',
+    'Eligibility details require review': 'eligibilityNeedsReview',
+    'Program does not serve this location': 'eligibilityOutOfArea',
     'Eligibility information temporarily unavailable': 'eligibilityTemporarilyUnavailable'
   }[status] || 'eligibilityTemporarilyUnavailable';
 }
@@ -1256,20 +1338,30 @@ function eligibilityResult(result, resource) {
   if (!result) return '';
   const noPublishedRules = result.status === 'No eligibility requirements published';
   const temporarilyUnavailable = result.status === 'Eligibility information temporarily unavailable';
+  const pendingResearch = result.status === 'Eligibility research pending';
+  const needsReview = result.status === 'Eligibility details require review';
+  const outOfArea = result.status === 'Program does not serve this location';
   return `<section class="eligibility-result" aria-live="polite">
     <h2>${tr(statusTranslation(result.status))}</h2>
     <p>${noPublishedRules
       ? tr('noEligibilityRequirementsExplanation')
       : temporarilyUnavailable
         ? tr('eligibilityTemporarilyUnavailableExplanation')
+        : pendingResearch
+          ? tr('eligibilityResearchPendingExplanation')
+          : needsReview
+            ? tr('eligibilityReviewExplanation')
+            : outOfArea
+              ? tr('eligibilityOutOfAreaExplanation')
         : tr('nearbyRulesDiffer')}</p>
-    ${result.program?.localEligibilityVerified ? eligibilityDetailsBlock(resource) : ''}
+    ${eligibilityDetailsBlock(resource)}
     ${result.passed?.length ? `<h3>${tr('satisfied')}</h3><ul>${result.passed.map(item => `<li>${tr('requirementMet', { requirement: tr(eligibilityFieldKey(item.field)) })}</li>`).join('')}</ul>` : ''}
     ${result.failed?.length ? `<h3>${tr('notSatisfied')}</h3><ul>${result.failed.map(item => `<li>${tr('requirementNotMet', { requirement: tr(eligibilityFieldKey(item.field)) })}</li>`).join('')}</ul>` : ''}
     ${result.missing?.length ? `<h3>${tr('missingInfo')}</h3><ul>${result.missing.map(item => `<li>${esc(eligibilityMissingLabel(item))}</li>`).join('')}</ul>` : ''}
     ${result.program?.localEligibilityVerified && resource.eligibilityExceptions?.length ? `<h3>${tr('exceptions')}</h3><ul>${resource.eligibilityExceptions.map(item => `<li>${esc(item)}</li>`).join('')}</ul>` : ''}
-    ${result.program?.localEligibilityVerified && resource.requiredDocuments?.length ? `<h3>${tr('documents')}</h3><ul>${resource.requiredDocuments.map(item => `<li>${esc(item)}</li>`).join('')}</ul>` : ''}
+    ${resource.requiredDocuments?.length ? `<h3>${tr('documents')}</h3><ul>${resource.requiredDocuments.map(item => `<li>${esc(item)}</li>`).join('')}</ul>` : ''}
     <h3>${tr('nextSteps')}</h3><p>${tr('confirmOrganization')}</p>
+    ${resource.eligibilitySourceUrl ? `<p><a class="secondary" href="${attr(safeUrl(resource.eligibilitySourceUrl))}" target="_blank" rel="noopener noreferrer">${tr('eligibilitySourceLink')} â†—</a></p>` : ''}
     <p><strong>${tr('lastVerified')}:</strong> ${esc(result.program?.eligibilityLastVerified || tr('nonePublished'))}</p>
     <p class="privacy-notice">${tr('preliminaryOnly')}</p>
     <button class="ghost" data-clear-eligibility>${tr('restartQuiz')}</button>
@@ -1334,12 +1426,14 @@ function requirementsPanel() {
     ? tr('requirementsTitle')
     : ['no_restrictions_listed', 'open'].includes(local?.eligibilityStatus)
       ? tr('noEligibilityRequirementsListed')
-      : tr('eligibilityTemporarilyUnavailable');
-  const eligibilityMessage = local?.localEligibilityVerified
-    ? resource.eligibilitySummary
-    : ['no_restrictions_listed', 'open'].includes(local?.eligibilityStatus)
-      ? tr('noEligibilityRequirementsExplanation')
-      : tr('eligibilityTemporarilyUnavailableExplanation');
+      : local?.eligibilityResearchStatus === 'technical_failure'
+        ? tr('eligibilityTemporarilyUnavailable')
+        : local?.eligibilityResearchStatus === 'ambiguous_review'
+          ? tr('eligibilityNeedsReview')
+          : !local?.inServiceArea
+            ? tr('eligibilityOutOfArea')
+            : tr('eligibilityResearchPending');
+  const eligibilityMessage = eligibilityDisplay(local);
   return drawer(`<h2 id="panel-title">${requirementsHeading}</h2>
     <p><strong>${tr('localProgramUsed')}:</strong> ${esc(resource.name)}</p>
     <p><strong>${tr('locationUsed')}:</strong> ${esc(state.location || tr('notEntered'))}</p>
@@ -1542,6 +1636,10 @@ async function performNearbySearch({
     const point = coordinates || await geocodeLocation(location);
     if (state.activeSearchKey !== key) return state.liveResults;
     state.coordinates = { lat: point.lat, lng: point.lng };
+    state.situationConstraints = parseSituation(`${state.otherNeed} ${state.situation}`, {
+      location: state.location,
+      coordinates: state.coordinates
+    });
     state.resolvedLocation = point.label || location;
     const canonicalCategory = [state.category || 'all', ...desired].join(':');
     const canonicalKey = coordinateCacheKey(point, canonicalCategory, radius);
@@ -1664,6 +1762,7 @@ async function submitSearch(form) {
     render({ focus: '#otherNeedInput' });
     return;
   }
+  applySituationFilters(`${state.otherNeed} ${state.situation}`);
   state.searched = true;
   state.page = 'find';
   state.storedResults = sourceResources;
@@ -1692,7 +1791,10 @@ function generateDecisionPlan(form) {
   });
   const selectedIds = new Set(state.helperPlan.map(item => item.id));
   const candidates = allResults().filter(resource => !selectedIds.size || selectedIds.has(resource.id));
-  state.decisionPlan = buildDecisionPlan(candidates, state.planConstraints);
+  state.decisionPlan = buildDecisionPlan(candidates, state.planConstraints, {
+    mode: state.mode,
+    situationConstraints: state.situationConstraints
+  });
   render({ focus: '#decision-plan-title' });
 }
 
@@ -1855,6 +1957,8 @@ app.addEventListener('click', async event => {
   }
   if (target.matches('[data-page]')) {
     state.page = target.dataset.page;
+    state.errorKey = '';
+    state.errorText = '';
     render({ focus: '#main' });
     scrollTo(0, 0);
   }
@@ -1897,6 +2001,10 @@ app.addEventListener('click', async event => {
     state.locationSuggestions = [];
     state.errorKey = '';
     state.coordinates = { lat: Number(target.dataset.lat), lng: Number(target.dataset.lng) };
+    state.situationConstraints = parseSituation(`${state.otherNeed} ${state.situation}`, {
+      location: state.location,
+      coordinates: state.coordinates
+    });
     persistShared();
     render();
     if (target.dataset.locationTarget !== 'helper' && state.searched && state.category) {
@@ -1956,15 +2064,19 @@ app.addEventListener('click', async event => {
     render();
   }
   if (target.matches('[data-helper-search]')) {
-    state.otherNeed = state.helperIntake.immediateNeed || '';
+    const selectedCategories = Array.isArray(state.helperIntake.serviceCategories)
+      ? state.helperIntake.serviceCategories
+      : [];
+    state.otherNeed = '';
     state.situation = state.helperIntake.situation || '';
-    state.category = state.helperIntake.serviceCategory || '';
+    state.category = selectedCategories[0] || '';
     state.location = state.helperIntake.location || state.location;
-    if (!state.category || !state.otherNeed || !state.location) {
+    if (!state.category || !state.location) {
       state.errorKey = 'locationRequired';
       render();
       return;
     }
+    applySituationFilters(`${state.situation} ${state.helperIntake.identification || ''} ${state.helperIntake.accessibility || ''}`);
     state.query = searchNeed();
     state.searched = true;
     state.page = 'find';
@@ -2000,6 +2112,17 @@ app.addEventListener('click', async event => {
       state.noticeKey = 'copied';
     } catch {
       state.errorKey = 'copyFailed';
+    }
+    render();
+  }
+  if (target.matches('[data-share-plan]')) {
+    const text = planText();
+    try {
+      if (navigator.share) await navigator.share({ title: 'BridgeAid resource plan', text });
+      else await navigator.clipboard.writeText(text);
+      state.noticeKey = 'copied';
+    } catch (error) {
+      if (error?.name !== 'AbortError') state.errorKey = 'copyFailed';
     }
     render();
   }
@@ -2158,6 +2281,19 @@ app.addEventListener('change', event => {
     state.helperPlan = updatePlanNote(state.helperPlan, target.dataset.planNote, target.value);
     persistHelper();
   }
+  if (target.matches('[data-plan-questions]')) {
+    state.helperPlan = updatePlanQuestions(state.helperPlan, target.dataset.planQuestions, target.value);
+    persistHelper();
+  }
+  if (target.matches('[data-export-eligibility]')) {
+    const csv = exportEligibilityCsv(sourceResources);
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `bridgeaid-eligibility-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
   if (target.matches('#eligibilityResource')) {
     state.eligibility.resourceId = target.value;
     state.eligibility.started = false;
@@ -2173,6 +2309,15 @@ app.addEventListener('input', event => {
   if (target.matches('[data-intake]') && !target.matches('#helperLocationInput')) {
     state.helperIntake[target.name] = target.value;
     persistHelper();
+  }
+  if (target.matches('[data-intake-category]')) {
+    const selected = new Set(Array.isArray(state.helperIntake.serviceCategories)
+      ? state.helperIntake.serviceCategories
+      : []);
+    target.checked ? selected.add(target.value) : selected.delete(target.value);
+    state.helperIntake.serviceCategories = [...selected];
+    persistHelper();
+    render();
   }
   if (target.matches('#locationInput, #helperLocationInput')) {
     if (target.matches('#helperLocationInput')) {

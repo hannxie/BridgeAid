@@ -1,6 +1,6 @@
 # BridgeAid audit and phased implementation
 
-Audit date: 2026-07-28
+Audit date: 2026-07-29
 
 ## Architecture audited
 
@@ -32,6 +32,10 @@ BridgeAid remains a no-build static progressive web app:
 | BridgeAI lag and layout | Search enrichment could overlap and chat presentation was cramped | Retained stored-first responses and request deduplication; verified message gap, padding, widths, and response metrics |
 | Decision intelligence | The old “plan” was a saved list with notes/status only | Added an optional action-plan generator that considers urgency, published hours, deadlines, documents, application methods, distance, transportation, budget, walking limits, wheelchair access, childcare, and physical limits |
 | Background coverage | Verification jobs existed, but there was no coverage-gap discovery model | Added deterministic discovery-job generation and a database migration for coverage gaps, search runs, and eligibility evidence |
+| Exact-situation ranking | Situation text only toggled broad same-day/no-ID/accessibility filters and never evaluated a requested wall-clock time | Added structured constraint parsing, U.S. time-zone inference, exact-time weekly/distribution/holiday/appointment checks, ranking penalties and boosts, and visible explanations |
+| Eligibility research state | A missing rule array was treated as a technical failure, even when research was pending, ambiguous, out of area, or found no public restrictions | Added per-program research states, a prioritized official-source queue, review/failure reasons, normalized database tables, and CSV administrative export |
+| Helper workflow | Helper mode required the same “Immediate need” field used by self-help and allowed only one category | Removed Immediate need, added multi-category planning, authorized-situation guidance, comparison, questions, call scripts, copy/print/share actions, and coordination-first plans |
+| Nationwide catalog size | Only five listings met the strict nationwide-online definition | Added verified actionable federal and national services across education, jobs, health, mental health, finance, benefits, housing, veterans, disability, immigration, digital access, tax, and legal recovery |
 
 ## Delivery phases
 
@@ -43,7 +47,7 @@ BridgeAid remains a no-build static progressive web app:
 
 ## Verification completed
 
-- `npm run check`: 92 tests passing.
+- `npm run check`: 100 tests passing.
 - Browser workflows: self search, typed ZIP suggestions, helper search transition, nationwide separation, Eligibility, multilingual BridgeAI response, action-plan generation, and no console errors.
 - Responsive checks: no horizontal overflow at 320 px, 768 px, and desktop; chat remained within the viewport.
 

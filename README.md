@@ -43,6 +43,9 @@ The implementation kept the no-build static architecture and existing resource r
 10. **Hardening** — added deterministic tests, HTML escaping, safe links, phone sanitization, local-storage failure handling, offline states, and responsive browser checks.
 11. **Local action paths** — added verified Seattle-area programs with structured local eligibility, full addresses, required documents, exceptions, deadlines, application steps, and direct official actions.
 12. **Nationwide search and decision intelligence** — added five-result U.S. autocomplete, normalized search signatures, uncapped paginated results, stale-saved-result blocking, coverage-gap discovery jobs, nationwide/local-provider separation, Education and Scholarships, and constraint-aware action plans.
+13. **Exact-situation ranking** — parses requested service, local date/time, urgency, distance, transportation, no-ID, appointment, accessibility, age, and household constraints; verified exact-time availability changes ranking and is explained on every result.
+14. **Program eligibility operations** — stores eligibility per organization and program, distinguishes pending/review/no-public-rules/technical-failure states, queues official-source research, and provides a CSV administrative export while keeping the application database authoritative.
+15. **Expanded national actions** — the nationwide catalog now includes more than twenty verified, actionable applications, assessments, claims, courses, searches, and counseling pathways across the requested categories.
 
 ## User modes
 
@@ -115,7 +118,7 @@ The existing national records remain in `data/resources.js`.
 3. If online, geocode the location and query OpenStreetMap.
 4. Normalize and merge duplicate results without losing source URLs.
 5. Rank by relevance, distance, availability, and source completeness.
-6. Save the refreshed result in `bridgeaid-resource-cache`.
+6. Save the refreshed result in the versioned `bridgeaid-resource-cache-v12`.
 7. If current information cannot be verified, hide expired records and show a retry path instead of silently substituting stale data.
 
 OpenStreetMap data is community-maintained and explicitly labeled for confirmation.
@@ -160,7 +163,7 @@ BridgeAid may store these values in the current browser profile:
 | `bridgeaid-location` | General search location | Privacy page |
 | `bridgeaid-helper-intake` | Optional helper constraints and notes | Clear intake/plan or Privacy page |
 | `bridgeaid-helper-plan` | Selected resources, status, and notes | Clear this plan or Privacy page |
-| `bridgeaid-resource-cache` | Faster repeated/offline searches | Privacy page |
+| `bridgeaid-resource-cache-v12` | Faster repeated/offline searches | Privacy page |
 | `bridgeaid-saved-searches` | Recent general search locations | Privacy page |
 | `ba-saved` | Saved resource identifiers | Clear site data |
 | `ba-lang` | Language preference | Clear site data |
@@ -249,7 +252,7 @@ or:
 node --test
 ```
 
-The deterministic suite contains 92 checks covering:
+The deterministic suite contains 100 checks covering:
 
 - Mode validation, persistence, switching, and location preservation
 - Storage corruption and blocked-storage behavior

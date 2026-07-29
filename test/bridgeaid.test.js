@@ -29,7 +29,8 @@ import {
   resolveSchedule,
   formatInTimeZone,
   weeklyScheduleRows,
-  resourceScheduleState
+  resourceScheduleState,
+  resourceAvailabilityAt
 } from '../js/services/schedule-service.js';
 import {
   questionsForRules,
@@ -45,6 +46,7 @@ import {
   haversineMiles,
   geocodeLocation,
   buildOverpassQuery,
+  inferCategory,
   normalizeOsmElement,
   fetchNearbyResources,
   geocodeResourceAddresses,
@@ -60,6 +62,7 @@ import {
   addPlanResource,
   updatePlanStatus,
   updatePlanNote,
+  updatePlanQuestions,
   removePlanResource,
   clearPlan
 } from '../js/services/helper-plan-service.js';
@@ -69,6 +72,8 @@ import {
   createJob,
   createVerificationJobs,
   createDiscoveryJobs,
+  createEligibilityResearchJobs,
+  recordEligibilityResearchOutcome,
   recordJobFailure
 } from '../server/services/background-job-service.js';
 import {
@@ -114,6 +119,8 @@ import {
 import { registrationGuidance } from '../js/services/registration-service.js';
 import { categories, resources, nationwideResources } from '../data/resources.js';
 import { buildDecisionPlan, normalizePlanConstraints } from '../js/services/decision-plan-service.js';
+import { parseSituation } from '../js/services/situation-service.js';
+import { eligibilityRecord, exportEligibilityCsv } from '../js/services/eligibility-data-service.js';
 
 class MemoryStorage {
   constructor() {
@@ -193,15 +200,15 @@ test('service taxonomy uses the requested complete order with All Services first
 });
 
 test('verified Seattle additions include actionable local evidence and full addresses', () => {
-  const local = resources.filter(resource => resource.city === 'Seattle' && resource.verified === '2026-07-28');
+  const local = resources.filter(resource => resource.city === 'Seattle' && resource.verified === '2026-07-29');
   assert.ok(local.length >= 12);
   for (const resource of local) {
     assert.match(resource.address, /Seattle, WA \d{5}$/);
     assert.ok(resource.category);
     assert.ok(resource.source);
     assert.ok(resource.eligibilitySourceUrl?.startsWith('https://'));
-    assert.equal(resource.eligibilityLastVerified, '2026-07-28');
-    assert.equal(resource.applicationLastVerified, '2026-07-28');
+    assert.equal(resource.eligibilityLastVerified, '2026-07-29');
+    assert.equal(resource.applicationLastVerified, '2026-07-29');
     assert.ok(resource.applicationSteps?.length >= 3);
     assert.ok(resource.applicationLinks?.length >= 1);
     assert.ok(resource.eligibilityDetails?.whoQualifies);
@@ -521,8 +528,8 @@ test('eligibility questions include only missing relevant fields', () => {
   assert.deepEqual(questionsForRules(rules, { age: 30 }).map(item => item.field), ['county']);
 });
 
-test('eligibility returns the required temporary-unavailable state without official rules', () => {
-  assert.equal(evaluateEligibility([], {}).status, 'Eligibility information temporarily unavailable');
+test('eligibility without stored rules is not mislabeled as a technical failure', () => {
+  assert.equal(evaluateEligibility([], {}).status, 'No eligibility requirements published');
 });
 
 test('missing eligibility answers return possibly eligible', () => {
@@ -592,6 +599,76 @@ test('ambiguous geocoding asks for clarification', async () => {
   await assert.rejects(() => geocodeLocation('Springfield', ambiguous), error => error.code === 'AMBIGUOUS_LOCATION');
 });
 
+test('situation text extracts exact local time and ranks confirmed food availability first', () => {
+  const constraints = parseSituation('I need food tonight at 7:00 PM within 5 miles and without an ID.', {
+    location: 'Seattle, WA',
+    now: new Date('2026-07-29T16:00:00Z')
+  });
+  assert.deepEqual(constraints.categories, ['food']);
+  assert.equal(constraints.requestedDate, '2026-07-29');
+  assert.equal(constraints.requestedMinutes, 19 * 60);
+  assert.equal(constraints.timeZone, 'America/Los_Angeles');
+  assert.equal(constraints.noId, true);
+  assert.equal(constraints.maxDistance, 5);
+
+  const base = {
+    category: 'food',
+    services: ['food'],
+    timeZone: 'America/Los_Angeles',
+    verified: '2026-07-29',
+    verificationPeriodDays: 30,
+    noIdRequired: true,
+    sourceUrls: ['https://official.example']
+  };
+  const ranked = rankResources([
+    { ...base, id: 'closed', name: 'Closes early', distance: 0.5, weeklyHours: { wednesday: [{ open: '09:00', close: '17:00' }] } },
+    { ...base, id: 'open', name: 'Dinner pantry', distance: 0.8, weeklyHours: { wednesday: [{ open: '18:00', close: '20:00' }] } },
+    { ...base, id: 'unknown', name: 'Unknown schedule', distance: 0.2 }
+  ], { categories: ['food'], constraints });
+  assert.equal(ranked[0].id, 'open');
+  assert.equal(ranked[0]._availabilityAtRequest.code, 'confirmed_available');
+  assert.match(ranked[0]._rankExplanation, /confirmed available at the requested time/);
+  assert.equal(ranked.find(resource => resource.id === 'closed')._availabilityAtRequest.code, 'confirmed_unavailable');
+});
+
+test('a requested time uses the nearest date phrase in a multi-need situation', () => {
+  const constraints = parseSituation(
+    'Needs food tonight at 8:30 PM and shelter options tomorrow.',
+    {
+      location: 'Seattle, WA',
+      now: new Date('2026-07-29T16:00:00Z')
+    }
+  );
+  assert.equal(constraints.requestedDate, '2026-07-29');
+  assert.equal(constraints.requestedMinutes, 20 * 60 + 30);
+  const tomorrow = parseSituation(
+    'Needs food today and shelter tomorrow at 7:00 AM.',
+    {
+      location: 'Seattle, WA',
+      now: new Date('2026-07-29T16:00:00Z')
+    }
+  );
+  assert.equal(tomorrow.requestedDate, '2026-07-30');
+});
+
+test('exact availability checks distribution windows and appointment requirements', () => {
+  const instant = parseSituation('food tonight at 7 PM', {
+    location: 'Seattle, WA',
+    now: new Date('2026-07-29T16:00:00Z')
+  }).requestedInstant;
+  const open = resourceAvailabilityAt({
+    timeZone: 'America/Los_Angeles',
+    weeklyHours: { wednesday: [{ open: '18:30', close: '19:30' }] }
+  }, instant);
+  const appointment = resourceAvailabilityAt({
+    timeZone: 'America/Los_Angeles',
+    appointmentOnly: true,
+    weeklyHours: { wednesday: [{ open: '18:30', close: '19:30' }] }
+  }, instant);
+  assert.equal(open.code, 'confirmed_available');
+  assert.equal(appointment.code, 'appointment_required');
+});
+
 test('location autocomplete returns at most five deduplicated U.S. suggestions', async () => {
   const fetcher = async () => ({
     ok: true,
@@ -656,9 +733,39 @@ test('OpenStreetMap normalization retains source attribution', () => {
   assert.equal(resource.category, 'food');
   assert.match(resource.sourceUrls[0], /openstreetmap/);
   assert.equal(resource.verificationStatus.includes('confirm'), true);
+  assert.equal(resource.eligibilityStatus, 'varies');
+  assert.equal(resource.eligibilityResearchStatus, 'pending');
   assert.equal(resource.weeklyHours.monday[0].open, '09:00');
   assert.deepEqual(resource.accessibility, ['Wheelchair accessible']);
   assert.deepEqual(resource.languages, ['English', 'Spanish']);
+});
+
+test('community-discovered hours remain uncertain until provider verification', () => {
+  const resource = normalizeOsmElement({
+    type: 'node',
+    id: 9,
+    lat: 47.61,
+    lon: -122.33,
+    tags: {
+      name: 'Example Food Bank',
+      amenity: 'food_bank',
+      opening_hours: 'Mo-Su 20:00-22:00',
+      'addr:city': 'Seattle',
+      'addr:state': 'WA'
+    }
+  }, { lat: 47.61, lng: -122.33 });
+  const result = resourceAvailabilityAt(resource, new Date('2026-07-30T03:30:00Z'));
+  assert.equal(result.code, 'uncertain');
+  assert.match(result.reason, /not yet been confirmed/i);
+});
+
+test('community centers are not classified as food aid from incidental wording', () => {
+  assert.equal(inferCategory({
+    name: 'Area 01 Community Center',
+    amenity: 'community_centre',
+    description: 'Community center for a Housing and Food Services population'
+  }), 'family');
+  assert.equal(inferCategory({ name: 'Neighborhood Food Bank', amenity: 'food_bank' }), 'food');
 });
 
 test('stored addresses receive coordinates and distance in the background enrichment path', async () => {
@@ -742,14 +849,16 @@ test('phone and external URL sanitizers reject unsafe values', () => {
   assert.equal(safeExternalUrl('javascript:alert(1)'), '');
 });
 
-test('helper plan supports add, status, note, remove, and clear', () => {
+test('helper plan supports add, status, notes, provider questions, remove, and clear', () => {
   const added = addPlanResource([], { id: 'a', name: 'A' }, new Date('2026-01-01T00:00:00Z'));
   assert.equal(added[0].status, 'Not contacted');
   const called = updatePlanStatus(added, 'a', 'Called');
   assert.equal(called[0].status, 'Called');
   const noted = updatePlanNote(called, 'a', '<private note>');
   assert.equal(noted[0].note, '<private note>');
-  assert.equal(removePlanResource(noted, 'a').length, 0);
+  const questioned = updatePlanQuestions(noted, 'a', 'Is Tuesday available?');
+  assert.equal(questioned[0].questions, 'Is Tuesday available?');
+  assert.equal(removePlanResource(questioned, 'a').length, 0);
   assert.deepEqual(clearPlan(), { plan: [], intake: {} });
 });
 
@@ -830,6 +939,41 @@ test('coverage gaps create deterministic nationwide discovery jobs', () => {
   assert.ok(jobs.every(job => job.type === 'discovery'));
 });
 
+test('eligibility research queue separates extracted, review, not-found, and technical outcomes', () => {
+  const now = new Date('2026-07-29T12:00:00Z');
+  const jobs = createEligibilityResearchJobs([
+    { id: 'missing', name: 'Missing Program', sourceUrls: ['https://official.example/program'] },
+    { id: 'fresh', name: 'Fresh Program', eligibilityRules: [{ field: 'age', operator: 'gte', value: 18 }], eligibilityLastVerified: '2026-07-28' }
+  ], now);
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0].payload.programName, 'Missing Program');
+  assert.equal(jobs[0].type, 'eligibility-extraction');
+  const review = recordEligibilityResearchOutcome(jobs[0], {
+    status: 'ambiguous_review',
+    reason: 'The official page and intake form use different income periods.'
+  }, now);
+  assert.equal(review.status, 'needs_review');
+  assert.match(review.researchOutcome.reason, /different income periods/);
+  const technical = recordEligibilityResearchOutcome(jobs[0], {
+    status: 'technical_failure',
+    reason: 'Official host timed out.'
+  }, now);
+  assert.equal(technical.status, 'failed');
+});
+
+test('eligibility records are stored per organization and program and export clean CSV', () => {
+  const jobCorps = resources.find(resource => resource.id === 'job-corps-application');
+  const record = eligibilityRecord(jobCorps);
+  assert.equal(record.organization, 'U.S. Department of Labor');
+  assert.equal(record.program, 'Job Corps');
+  assert.equal(record.service_area, 'United States');
+  assert.ok(record.eligibility_page.startsWith('https://'));
+  assert.ok(record.application_link.startsWith('https://'));
+  const csv = exportEligibilityCsv([jobCorps]);
+  assert.match(csv, /"organization","program","service_category"/);
+  assert.match(csv, /"U\.S\. Department of Labor","Job Corps"/);
+});
+
 test('decision planning respects distance, budget, accessibility, and reusable documents', () => {
   const base = {
     category: 'food',
@@ -861,6 +1005,17 @@ test('decision planning respects distance, budget, accessibility, and reusable d
   }, { now: new Date('2026-07-28T12:00:00Z') });
   assert.ok(plan.steps.some(step => step.type === 'documents'));
   assert.ok(plan.steps.some(step => step.resourceId === 'near'));
+  assert.equal(plan.mode, 'self');
+  assert.equal(plan.steps.at(-1).type, 'documents');
+  const helperPlan = buildDecisionPlan([
+    { ...base, id: 'near', name: 'Near Pantry', phone: '206-555-0100', distance: 1, accessibility: ['Wheelchair accessible'] }
+  ], {
+    transportation: 'walking',
+    maxDistance: 5
+  }, { now: new Date('2026-07-28T12:00:00Z'), mode: 'helper' });
+  assert.equal(helperPlan.steps[0].type, 'documents');
+  assert.equal(helperPlan.steps[1].type, 'phone');
+  assert.match(helperPlan.explanation, /provider confirmation calls/);
   assert.deepEqual(plan.excluded.map(item => item.resourceId).sort(), ['far', 'unknown-access']);
   assert.match(plan.explanation, /No step guarantees/);
   assert.equal(normalizePlanConstraints({ maxDistance: -1 }).maxDistance, 10);
@@ -1093,7 +1248,7 @@ test('Seattle utility screening applies the exact 2026 household-income table', 
   });
   assert.equal(eligible.status, 'Likely eligible');
   assert.equal(overLimit.status, 'Likely not eligible');
-  assert.equal(evaluateLocalEligibility(program, '10001', {}).status, 'Eligibility information temporarily unavailable');
+  assert.equal(evaluateLocalEligibility(program, '10001', {}).status, 'Program does not serve this location');
 });
 
 test('age-range eligibility supports exact program minimum and maximum ages', () => {
@@ -1119,7 +1274,34 @@ test('generic national eligibility is not presented as confirmed local eligibili
     eligibilityRules: [{ field: 'age', operator: 'gte', value: 18 }],
     sourceUrls: ['https://official.example']
   }, '98101', { age: 30 });
-  assert.equal(result.status, 'Eligibility information temporarily unavailable');
+  assert.equal(result.status, 'Program does not serve this location');
+});
+
+test('temporary eligibility unavailability is reserved for technical research failures', () => {
+  const base = {
+    id: 'program',
+    name: 'Program',
+    city: 'Seattle',
+    serviceAreas: ['Seattle'],
+    eligibilitySourceUrl: 'https://official.example/eligibility'
+  };
+  assert.equal(evaluateLocalEligibility({
+    ...base,
+    eligibilityResearchStatus: 'pending'
+  }, 'Seattle', {}).status, 'Eligibility research pending');
+  assert.equal(evaluateLocalEligibility({
+    ...base,
+    eligibilityResearchStatus: 'ambiguous_review'
+  }, 'Seattle', {}).status, 'Eligibility details require review');
+  assert.equal(evaluateLocalEligibility({
+    ...base,
+    eligibilityResearchStatus: 'technical_failure'
+  }, 'Seattle', {}).status, 'Eligibility information temporarily unavailable');
+  assert.equal(evaluateLocalEligibility({
+    ...base,
+    eligibilityStatus: 'no_restrictions_listed',
+    eligibilityResearchStatus: 'no_public_restrictions'
+  }, 'Seattle', {}).status, 'No eligibility requirements published');
 });
 
 test('registration guidance always provides a verified path or clear alternative', () => {
@@ -1174,8 +1356,8 @@ test('missing schedule becomes uncertain only after source checks fail', async (
 });
 
 test('verified Seattle resources publish seven-day hours or an explicit not-listed state', () => {
-  const local = resources.filter(resource => resource.city === 'Seattle' && resource.verified === '2026-07-28');
-  assert.equal(local.length, 13);
+  const local = resources.filter(resource => resource.city === 'Seattle' && resource.verified === '2026-07-29');
+  assert.ok(local.length >= 15);
   for (const resource of local) {
     assert.ok(resource.weeklyHours || resource.scheduleLabel === 'not_listed', resource.id);
     if (resource.weeklyHours) assert.equal(weeklyScheduleRows(resource).length, 7, resource.id);
@@ -1195,12 +1377,15 @@ test('eligibility fallback uses the exact required disclosure in the interface',
 });
 
 test('nationwide online resources are separated from local results and carry actionable details', () => {
-  assert.ok(nationwideResources.length >= 5);
+  assert.ok(nationwideResources.length >= 20);
   assert.ok(nationwideResources.every(resource => resource.scope === 'nationwide-online'));
   assert.ok(nationwideResources.every(resource => !resource.requiresLocalProvider));
   assert.ok(nationwideResources.every(resource => resource.applicationSteps?.length >= 3));
   assert.ok(nationwideResources.every(resource => resource.applicationMethods?.length));
   assert.ok(nationwideResources.every(resource => resource.lastVerified));
+  assert.ok(nationwideResources.every(resource => resource.eligibilitySourceUrl?.startsWith('https://')));
+  assert.ok(nationwideResources.every(resource => resource.applicationLinks?.some(link => link.url?.startsWith('https://'))));
+  assert.ok(nationwideResources.filter(resource => resource.eligibilityStatus === 'structured').length >= 8);
   assert.ok(resources.filter(resource => resource.scope === 'location').every(resource => !resource.onlineOnly));
   assert.ok(resources.some(resource => resource.scope === 'provider-directory'));
   assert.ok(nationwideResources.some(resource => resource.category === 'education'));
@@ -1227,7 +1412,7 @@ test('search UI exposes one Call 211 action and does not warn when stored fallba
   assert.match(appSource, /void searchNearby\(\)/);
 });
 
-test('removed support numbers stay absent and completion estimates are explicitly non-guaranteed', async () => {
+test('only the verified 988 crisis number is present and completion estimates are explicitly non-guaranteed', async () => {
   const paths = [
     '../js/app.js',
     '../js/localization.js',
@@ -1235,7 +1420,8 @@ test('removed support numbers stay absent and completion estimates are explicitl
     '../README.md'
   ];
   const combined = (await Promise.all(paths.map(path => readFile(new URL(path, import.meta.url), 'utf8')))).join('\n');
-  assert.doesNotMatch(combined, /9(?:11|88)/);
+  assert.doesNotMatch(combined, /\b911\b/);
+  assert.match(combined, /988 Suicide & Crisis Lifeline/);
   const appSource = await readFile(new URL('../js/app.js', import.meta.url), 'utf8');
   assert.match(appSource, /completionConfidence/);
   assert.match(appSource, /planNoGuarantee/);
@@ -1253,7 +1439,8 @@ test('search UI requires both intake fields, paginates without a 50-record cap, 
   const appSource = await readFile(new URL('../js/app.js', import.meta.url), 'utf8');
   assert.match(appSource, /name="location"[^>]+required/);
   assert.match(appSource, /name="need"[^>]+required/);
-  assert.match(appSource, /helperField\('immediateNeed'.*true\)/);
+  assert.doesNotMatch(appSource, /helperField\('immediateNeed'/);
+  assert.match(appSource, /data-intake-category/);
   assert.match(appSource, /id="helperLocationInput"[^>]*required/);
   assert.match(appSource, /data-load-more/);
   assert.doesNotMatch(appSource, /\.slice\(0,\s*50\)/);

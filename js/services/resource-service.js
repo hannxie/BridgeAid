@@ -1,4 +1,4 @@
-import { resourceScheduleState } from './schedule-service.js';
+import { resourceAvailabilityAt, resourceScheduleState } from './schedule-service.js';
 
 const SEARCH_CACHE_FRESH_FOR_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_VERIFICATION_PERIOD_DAYS = 90;
@@ -128,6 +128,8 @@ export function normalizeResource(resource, language = 'en') {
     eligibilityRules: Array.isArray(resource.eligibilityRules) ? resource.eligibilityRules : [],
     eligibilitySourceUrl: resource.eligibilitySourceUrl || '',
     eligibilityLastVerified: resource.eligibilityLastVerified || '',
+    eligibilityResearchStatus: resource.eligibilityResearchStatus || '',
+    eligibilityResearchReason: resource.eligibilityResearchReason || '',
     eligibilityExceptions: Array.isArray(resource.eligibilityExceptions) ? resource.eligibilityExceptions.map(value => textFor(value, language)) : [],
     serviceAreas: Array.isArray(resource.serviceAreas) ? resource.serviceAreas : [],
     serviceAreaZipRanges: Array.isArray(resource.serviceAreaZipRanges) ? resource.serviceAreaZipRanges : [],
@@ -161,10 +163,15 @@ export function normalizeResource(resource, language = 'en') {
     verificationPeriodDays: Number(resource.verificationPeriodDays) || DEFAULT_VERIFICATION_PERIOD_DAYS,
     confidence: Number.isFinite(Number(resource.confidence)) ? Number(resource.confidence) : null,
     verificationStatus: resource.verificationStatus || (resource.verified ? 'Previously checked' : 'Needs confirmation'),
+    discoveryStatus: resource.discoveryStatus || '',
     conflicts: Array.isArray(resource.conflicts) ? resource.conflicts : [],
     changeHistory: Array.isArray(resource.changeHistory) ? resource.changeHistory : [],
     keywords: Array.isArray(resource.keywords) ? resource.keywords : [],
-    distance: rawDistance !== null && rawDistance !== undefined && rawDistance !== '' && Number.isFinite(Number(rawDistance)) ? Number(rawDistance) : null
+    distance: rawDistance !== null && rawDistance !== undefined && rawDistance !== '' && Number.isFinite(Number(rawDistance)) ? Number(rawDistance) : null,
+    _rank: Number(resource._rank || 0),
+    _rankReasons: Array.isArray(resource._rankReasons) ? resource._rankReasons : [],
+    _rankExplanation: resource._rankExplanation || '',
+    _availabilityAtRequest: resource._availabilityAtRequest || null
   };
 }
 
@@ -430,15 +437,78 @@ export function stableResourceComparator(a, b) {
 
 export function rankResources(resources, context = {}) {
   const wanted = new Set(context.categories || []);
+  const constraints = context.constraints || {};
   return resources.map(item => {
     const r = normalizeResource(item);
     let score = 0;
-    if (wanted.has(r.category) || r.services.some(s => wanted.has(s))) score += 40;
+    const reasons = [];
+    const serviceMatch = wanted.has(r.category) || r.services.some(s => wanted.has(s));
+    if (serviceMatch) {
+      score += 80;
+      reasons.push('matches the requested service');
+    } else if (wanted.size) {
+      score -= 80;
+    }
+    let requestedAvailability = null;
+    if (constraints.requestedInstant instanceof Date && !Number.isNaN(constraints.requestedInstant.getTime())) {
+      requestedAvailability = resourceAvailabilityAt(r, constraints.requestedInstant);
+      if (requestedAvailability.available && requestedAvailability.confirmed) {
+        score += 75;
+        reasons.push('is confirmed available at the requested time');
+      } else if (requestedAvailability.code === 'appointment_required') {
+        score -= constraints.appointmentRestriction ? 70 : 20;
+        reasons.push('requires an appointment');
+      } else if (requestedAvailability.confirmed) {
+        score -= 65;
+        reasons.push('is confirmed unavailable at the requested time');
+      } else {
+        score -= 12;
+        reasons.push('has uncertain hours at the requested time');
+      }
+    }
+    if (constraints.noId) {
+      if (r.noIdRequired) {
+        score += 24;
+        reasons.push('publishes a no-ID option');
+      } else {
+        score -= 30;
+      }
+    }
+    if (constraints.walkInOnly || constraints.appointmentRestriction) {
+      if (/walk.?in|not required|none/i.test(`${r.walkInStatus} ${r.appointmentRequirement}`)) {
+        score += 20;
+        reasons.push('publishes walk-in access');
+      } else if (r.appointmentOnly || /appointment required/i.test(r.appointmentRequirement)) {
+        score -= 45;
+      }
+    }
+    if (constraints.wheelchairAccessible) {
+      if (r.accessibility.some(value => /wheelchair|step.?free/i.test(value))) {
+        score += 20;
+        reasons.push('publishes matching accessibility');
+      } else {
+        score -= 25;
+      }
+    }
+    if (Number.isFinite(constraints.maxDistance) && Number.isFinite(r.distance) && r.distance > constraints.maxDistance) {
+      score -= 80;
+      reasons.push(`is beyond the ${constraints.maxDistance}-mile preference`);
+    }
     if (r.distance !== null) score += Math.max(0, 25 - r.distance * 2);
+    if (r.distance !== null) reasons.push(`${r.distance.toFixed(1)} miles away`);
     if (r.availabilityStatus === 'Open now') score += 18;
     if (r.walkInStatus) score += 5;
     if (r.sourceUrls.length) score += 6;
     if (r.confidence !== null) score += r.confidence * 10;
-    return { ...item, _rank: score };
+    const explanation = reasons.length
+      ? `Prioritized because it ${reasons.slice(0, 3).join(', ')}.`
+      : 'Ranked using verified service details, distance, and availability evidence.';
+    return {
+      ...item,
+      _rank: score,
+      _rankReasons: reasons,
+      _rankExplanation: explanation,
+      _availabilityAtRequest: requestedAvailability
+    };
   }).sort((a, b) => b._rank - a._rank || stableResourceComparator(a, b));
 }

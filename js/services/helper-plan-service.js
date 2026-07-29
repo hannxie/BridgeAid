@@ -8,6 +8,7 @@ export function addPlanResource(plan, resource, now = new Date()) {
     directions: resource.directions || '',
     status: 'Not contacted',
     note: '',
+    questions: '',
     eligibilitySummary: resource.eligibilitySummary || '',
     registrationRequirement: resource.registrationRequirement || '',
     requiredDocuments: resource.requiredDocuments || [],
@@ -23,6 +24,10 @@ export function updatePlanStatus(plan, id, status) {
 
 export function updatePlanNote(plan, id, note) {
   return plan.map(item => item.id === id ? { ...item, note: String(note || '') } : item);
+}
+
+export function updatePlanQuestions(plan, id, questions) {
+  return plan.map(item => item.id === id ? { ...item, questions: String(questions || '') } : item);
 }
 
 export function removePlanResource(plan, id) {

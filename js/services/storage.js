@@ -50,6 +50,7 @@ export function clearPrivateData(storage = globalThis.localStorage) {
     'bridgeaid-helper-intake',
     'bridgeaid-helper-plan',
     'bridgeaid-resource-cache',
+    'bridgeaid-resource-cache-v12',
     'bridgeaid-saved-searches',
     'bridgeaid-correction-queue',
     'ba-location',

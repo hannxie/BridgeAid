@@ -29,7 +29,7 @@ const E = {
   varies: { en: 'Eligibility, availability, and documents vary by local program.', zh: '资格、名额和所需文件因当地项目而异。', es: 'La elegibilidad, disponibilidad y documentos varían según el programa.' }
 };
 const L = en => ({ en });
-const VERIFIED = '2026-07-28';
+const VERIFIED = '2026-07-29';
 const PERIOD = (open, close) => [{ open, close }];
 const WEEKDAYS = (open, close, overrides = {}) => ({
   monday: PERIOD(open, close),
@@ -1077,10 +1077,492 @@ const resourceRecords = [
   }
 ];
 
+resourceRecords.push(
+  {
+    id: 'west-seattle-food-bank-pantry',
+    category: 'food',
+    services: ['food', 'family'],
+    organizationName: 'West Seattle Food Bank',
+    programName: 'Food Bank',
+    name: 'West Seattle Food Bank',
+    description: L('Walk-in grocery distribution with a published weekly schedule and no appointment required.'),
+    address: '3419 SW Morgan St, Seattle, WA 98126',
+    city: 'Seattle',
+    county: 'King County',
+    state: 'WA',
+    zip: '98126',
+    phone: '206-932-9023',
+    url: 'https://westseattlefoodbank.org/programs-services/',
+    officialDomains: ['westseattlefoodbank.org'],
+    hours: L('Tuesday 10:00 a.m.–2:00 p.m.; Wednesday noon–7:00 p.m.; Thursday and Friday 10:00 a.m.–2:00 p.m.'),
+    weeklyHours: {
+      monday: [],
+      tuesday: PERIOD('10:00', '14:00'),
+      wednesday: PERIOD('12:00', '19:00'),
+      thursday: PERIOD('10:00', '14:00'),
+      friday: PERIOD('10:00', '14:00'),
+      saturday: [],
+      sunday: []
+    },
+    timeZone: 'America/Los_Angeles',
+    hoursSourceUrl: 'https://westseattlefoodbank.org/programs-services/',
+    hoursLastVerified: VERIFIED,
+    scheduleLabel: 'published',
+    appointmentOnly: false,
+    walkInStatus: L('Walk-ins are accepted; no appointment is required.'),
+    eligibilitySummary: L('The official service page does not publish income, residency, or other eligibility restrictions for food-bank visits. Contact the food bank if you need confirmation for a specific situation.'),
+    eligibilityStatus: 'no_restrictions_listed',
+    eligibilityResearchStatus: 'no_public_restrictions',
+    eligibilityDetails: {
+      whoQualifies: L('People seeking grocery assistance; the official service page does not list a narrower public eligibility rule.'),
+      geographicRestrictions: L('The official service page does not publish a residency restriction.'),
+      importantExceptions: L('Availability can change with holidays or emergency closures; check the official service page before traveling.')
+    },
+    eligibilitySourceUrl: 'https://westseattlefoodbank.org/programs-services/',
+    eligibilityLastVerified: VERIFIED,
+    requiredDocuments: [L('No documents are publicly listed on the official service page.')],
+    serviceAreas: ['Seattle', 'King County'],
+    serviceAreaZipPrefixes: ['981'],
+    access: L('Visit during a published distribution window; the provider states that no appointment is required.'),
+    applicationMethods: ['inPerson'],
+    applicationLinks: [
+      { type: 'instructions', url: 'https://westseattlefoodbank.org/programs-services/', label: L('Check current food-bank instructions and hours') }
+    ],
+    applicationSteps: [
+      L('Review the current distribution hours on the official service page.'),
+      L('Bring bags or a cart if possible.'),
+      L('Go to 3419 SW Morgan Street during an active distribution window.'),
+      L('Ask staff about any food or household support you need.')
+    ],
+    applicationDeadline: L('No application deadline is published; food is distributed during the posted weekly windows.'),
+    afterApplying: L('This is a walk-in service. Ask staff about return visits and any schedule changes.'),
+    applicationSourceUrl: 'https://westseattlefoodbank.org/programs-services/',
+    applicationLastVerified: VERIFIED,
+    source: 'West Seattle Food Bank',
+    sourceUrls: ['https://westseattlefoodbank.org/programs-services/'],
+    verified: VERIFIED,
+    verificationPeriodDays: 30,
+    freeStatus: 'Free food assistance',
+    keywords: ['food', 'groceries', 'pantry', 'walk-in', 'no appointment']
+  },
+  {
+    id: 'operation-nightwatch-evening-meal',
+    category: 'food',
+    services: ['food', 'shelter'],
+    organizationName: 'Operation Nightwatch',
+    programName: 'Nightwatch Shelter Evening Meal',
+    name: 'Operation Nightwatch Evening Meal',
+    description: L('A hot inside meal for adults experiencing homelessness, served late every night before shelter placement.'),
+    address: '302 14th Ave S, Seattle, WA 98144',
+    city: 'Seattle',
+    county: 'King County',
+    state: 'WA',
+    zip: '98144',
+    phone: '206-329-2099',
+    url: 'https://www.seattlenightwatch.org/get-help/nightwatch-shelter/',
+    officialDomains: ['seattlenightwatch.org'],
+    hours: L('Inside meal service is 8:00–9:15 p.m. nightly. Potential shelter placement is 8:00–9:00 p.m. nightly.'),
+    weeklyHours: {
+      monday: PERIOD('20:00', '21:15'),
+      tuesday: PERIOD('20:00', '21:15'),
+      wednesday: PERIOD('20:00', '21:15'),
+      thursday: PERIOD('20:00', '21:15'),
+      friday: PERIOD('20:00', '21:15'),
+      saturday: PERIOD('20:00', '21:15'),
+      sunday: PERIOD('20:00', '21:15')
+    },
+    timeZone: 'America/Los_Angeles',
+    hoursSourceUrl: 'https://www.seattlenightwatch.org/get-help/nightwatch-shelter/',
+    hoursLastVerified: VERIFIED,
+    scheduleLabel: 'published',
+    appointmentOnly: false,
+    walkInStatus: L('Show up in person at the Shelter Dispatch Center.'),
+    eligibilitySummary: L('The evening food and shelter service is for adults experiencing homelessness. Shelter beds are limited and are not guaranteed.'),
+    eligibilityStatus: 'rules_published',
+    eligibilityResearchStatus: 'rules_extracted',
+    eligibilityDetails: {
+      whoQualifies: L('Adults experiencing homelessness who come to the Shelter Dispatch Center for the evening meal or possible shelter placement.'),
+      geographicRestrictions: L('The official access page does not publish a residency boundary.'),
+      ageHouseholdRequirements: L('The program describes its guests as homeless adults.'),
+      importantExceptions: L('A meal is served nightly, but the limited off-site shelter beds are not guaranteed.')
+    },
+    eligibilityRules: [
+      { field: 'age', label: 'Adult service', question: 'What is the person’s age?', operator: 'gte', value: 18 },
+      { field: 'housingStatus', label: 'Experiencing homelessness', question: 'Is the person currently experiencing homelessness? Enter yes or no.', operator: 'eq', value: 'yes' }
+    ],
+    eligibilitySourceUrl: 'https://www.seattlenightwatch.org/get-help/nightwatch-shelter/',
+    eligibilityLastVerified: VERIFIED,
+    requiredDocuments: [L('The official access page does not list documents for the nightly meal.')],
+    serviceAreas: ['Seattle', 'King County'],
+    serviceAreaZipPrefixes: ['981'],
+    access: L('Go to the Shelter Dispatch Center at 302 14th Avenue South during the published evening service window.'),
+    applicationMethods: ['inPerson', 'phone'],
+    applicationLinks: [
+      { type: 'instructions', url: 'https://www.seattlenightwatch.org/get-help/nightwatch-shelter/', label: L('Review official meal and shelter access instructions') }
+    ],
+    applicationSteps: [
+      L('Review the current nightly service window on the official access page.'),
+      L('Travel light because the shelters cannot store belongings.'),
+      L('Go in person to 302 14th Avenue South for the inside meal.'),
+      L('If shelter is also needed, ask staff about that night’s limited off-site beds.')
+    ],
+    applicationDeadline: L('No application deadline is published; access is in person during the nightly service window.'),
+    afterApplying: L('Meal service is nightly. Shelter placement depends on that evening’s limited bed availability.'),
+    applicationSourceUrl: 'https://www.seattlenightwatch.org/get-help/nightwatch-shelter/',
+    applicationLastVerified: VERIFIED,
+    source: 'Operation Nightwatch',
+    sourceUrls: [
+      'https://www.seattlenightwatch.org/get-help/nightwatch-shelter/',
+      'https://www.seattlenightwatch.org/what-we-do/food-and-shelter/'
+    ],
+    verified: VERIFIED,
+    verificationPeriodDays: 30,
+    freeStatus: 'Free nightly meal',
+    keywords: ['food', 'hot meal', 'homeless', 'late night', 'shelter']
+  }
+);
+
+const nationwideActionPrograms = [
+  {
+    id: 'job-corps-application',
+    organizationName: 'U.S. Department of Labor',
+    programName: 'Job Corps',
+    name: 'Job Corps Online Application',
+    category: 'jobs',
+    services: ['jobs', 'education', 'shelter', 'health'],
+    description: L('Apply for no-cost career training, education, housing, meals, and support through Job Corps.'),
+    url: 'https://enroll.jobcorps.gov/',
+    officialDomains: ['jobcorps.gov'],
+    eligibilitySummary: L('Generally for low-income people ages 16 through 24 who are authorized to work in the United States; some age exceptions apply for people with disabilities. Admissions makes the final decision.'),
+    eligibilityStatus: 'structured',
+    eligibilityRules: [
+      { field: 'age', label: 'Age 16 through 24 unless a disability exception applies', operator: 'between', value: [16, 24] },
+      { field: 'employmentAuthorization', label: 'U.S. citizen, legal resident, territorial resident, or otherwise authorized to work', operator: 'eq', value: 'yes' },
+      { field: 'lowIncome', label: 'Meets the published low-income criterion or exception', operator: 'eq', value: 'yes' }
+    ],
+    eligibilityExceptions: [L('The upper age limit may be waived for a person with a disability.')],
+    requiredDocuments: [L('Proof of identity and age'), L('Social Security card or accepted work-authorization document'), L('Income or public-benefit documentation when requested')],
+    applicationMethods: ['online'],
+    applicationLinks: [{ type: 'application', url: 'https://enroll.jobcorps.gov/', label: L('Start the Job Corps application') }],
+    eligibilitySourceUrl: 'https://enrollmenthelp.jobcorps.gov/hc/en-us/articles/38111853723917-Am-I-eligible-for-Job-Corps',
+    applicationSourceUrl: 'https://enrollmenthelp.jobcorps.gov/hc/en-us/articles/14378052048525-How-do-I-apply-to-Job-Corps',
+    sourceUrls: ['https://www.jobcorps.gov/faqs/', 'https://enrollmenthelp.jobcorps.gov/hc/en-us/articles/38111853723917-Am-I-eligible-for-Job-Corps'],
+    freeStatus: 'No cost to eligible students'
+  },
+  {
+    id: 'apprenticeship-job-finder',
+    organizationName: 'U.S. Department of Labor',
+    programName: 'Apprenticeship Job Finder',
+    name: 'Apprenticeship.gov Job Finder',
+    category: 'jobs',
+    services: ['jobs', 'education'],
+    description: L('Search active apprenticeship jobs across the country and continue to the employer or sponsor application.'),
+    url: 'https://www.apprenticeship.gov/finder/listings',
+    eligibilitySummary: L('Open to career seekers; each employer or program sponsor publishes opportunity-specific qualifications.'),
+    eligibilityStatus: 'no_restrictions_listed',
+    requiredDocuments: [L('No documents are needed to search; employers may request a résumé, identity, education, or work-authorization records.')],
+    applicationMethods: ['online'],
+    applicationLinks: [{ type: 'application', url: 'https://www.apprenticeship.gov/finder/listings', label: L('Find and apply for apprenticeships') }],
+    eligibilitySourceUrl: 'https://www.apprenticeship.gov/career-seekers',
+    sourceUrls: ['https://www.apprenticeship.gov/help/how-do-i-find-open-apprenticeship-job-opportunities', 'https://www.apprenticeship.gov/finder/listings'],
+    freeStatus: 'Free search; apprenticeships are paid jobs'
+  },
+  {
+    id: 'healthcare-marketplace-application',
+    organizationName: 'Centers for Medicare & Medicaid Services',
+    programName: 'Health Insurance Marketplace',
+    name: 'HealthCare.gov Marketplace Application',
+    category: 'health',
+    services: ['health', 'benefits', 'family'],
+    description: L('Apply for Marketplace health coverage and receive an eligibility result for savings, Medicaid, or CHIP referrals.'),
+    url: 'https://www.healthcare.gov/apply-and-enroll/',
+    eligibilitySummary: L('Applicants generally must live in the United States, be a citizen, national, or lawfully present noncitizen, not be incarcerated, and not already have Medicare. State marketplaces may handle enrollment in some states.'),
+    eligibilityStatus: 'structured',
+    eligibilityRules: [
+      { field: 'usResident', label: 'Lives in the United States', operator: 'eq', value: 'yes' },
+      { field: 'qualifyingStatus', label: 'Citizen, national, or lawfully present noncitizen', operator: 'eq', value: 'yes' },
+      { field: 'incarcerated', label: 'Not incarcerated', operator: 'eq', value: 'no' }
+    ],
+    requiredDocuments: [L('Household and contact information'), L('Social Security numbers or immigration document information when applicable'), L('Employer and household income information'), L('Current coverage information')],
+    applicationMethods: ['online', 'phone'],
+    applicationLinks: [{ type: 'application', url: 'https://www.healthcare.gov/apply-and-enroll/', label: L('Apply for health coverage') }],
+    eligibilitySourceUrl: 'https://www.healthcare.gov/quick-guide/eligibility/',
+    sourceUrls: ['https://www.healthcare.gov/quick-guide/eligibility/', 'https://www.healthcare.gov/downloads/Marketplace_checklist.pdf'],
+    freeStatus: 'Application is free; plan costs vary'
+  },
+  {
+    id: 'ssa-disability-online',
+    organizationName: 'Social Security Administration',
+    programName: 'Social Security Disability Insurance',
+    name: 'Social Security Disability Online Application',
+    category: 'disability',
+    services: ['disability', 'benefits'],
+    description: L('Apply online for disability benefits and complete the related medical release.'),
+    url: 'https://www.ssa.gov/applyfordisability/',
+    eligibilitySummary: L('Online adult applicants must be 18 or older, not receive benefits on their own record, be unable to work because of a condition expected to last at least 12 months or result in death, and not have a denial within the last 60 days. Work-history rules also apply.'),
+    eligibilityStatus: 'structured',
+    eligibilityRules: [
+      { field: 'age', label: 'Age 18 or older', operator: 'gte', value: 18 },
+      { field: 'unableToWorkLongTerm', label: 'Condition prevents work for at least 12 months or is expected to result in death', operator: 'eq', value: 'yes' },
+      { field: 'recentDenial', label: 'No disability denial within the last 60 days', operator: 'eq', value: 'no' }
+    ],
+    requiredDocuments: [L('Birth and identity information'), L('Work and earnings history'), L('Medical providers, conditions, medications, and evidence'), L('Workers compensation or similar benefit records when applicable')],
+    applicationMethods: ['online'],
+    applicationLinks: [{ type: 'application', url: 'https://www.ssa.gov/applyfordisability/', label: L('Apply for disability benefits') }],
+    eligibilitySourceUrl: 'https://www.ssa.gov/disability/eligibility',
+    sourceUrls: ['https://www.ssa.gov/applyfordisability/', 'https://www.ssa.gov/disability/eligibility'],
+    freeStatus: 'Free federal application'
+  },
+  {
+    id: 'va-health-care-application',
+    organizationName: 'U.S. Department of Veterans Affairs',
+    programName: 'VA Health Care',
+    name: 'Apply for VA Health Care',
+    category: 'veteran',
+    services: ['veteran', 'health'],
+    description: L('Apply for VA health care online, by phone, by mail, or in person.'),
+    url: 'https://www.va.gov/health-care/apply/application',
+    eligibilitySummary: L('For Veterans and certain service members who meet current VA health-care service and discharge requirements; VA determines priority and eligibility.'),
+    eligibilityStatus: 'structured',
+    eligibilityRules: [{ field: 'veteranStatus', label: 'Veteran or qualifying service member', operator: 'eq', value: 'yes' }],
+    requiredDocuments: [L('Military discharge papers and service history'), L('Social Security numbers for applicant and qualifying household members'), L('Insurance information'), L('Household income and deductible expenses if needed')],
+    applicationMethods: ['online', 'phone', 'mail', 'inPerson'],
+    applicationLinks: [{ type: 'application', url: 'https://www.va.gov/health-care/apply/application', label: L('Apply for VA health care') }],
+    eligibilitySourceUrl: 'https://www.va.gov/health-care/eligibility/',
+    applicationSourceUrl: 'https://www.va.gov/health-care/how-to-apply/',
+    sourceUrls: ['https://www.va.gov/health-care/how-to-apply/', 'https://www.va.gov/health-care/eligibility/'],
+    freeStatus: 'Application is free; copays depend on eligibility and priority'
+  },
+  {
+    id: 'va-disability-claim',
+    organizationName: 'U.S. Department of Veterans Affairs',
+    programName: 'VA Disability Compensation',
+    name: 'VA Disability Compensation Claim',
+    category: 'veteran',
+    services: ['veteran', 'disability', 'benefits'],
+    description: L('File an online claim for disability compensation and related benefits.'),
+    url: 'https://www.va.gov/disability/file-disability-claim-form-21-526ez/',
+    eligibilitySummary: L('For Veterans with a current illness or injury connected to military service, or a pre-service condition made worse by service. VA decides service connection.'),
+    eligibilityStatus: 'structured',
+    eligibilityRules: [
+      { field: 'veteranStatus', label: 'Veteran status', operator: 'eq', value: 'yes' },
+      { field: 'serviceConnectedCondition', label: 'Current condition may be connected to or aggravated by service', operator: 'eq', value: 'yes' }
+    ],
+    requiredDocuments: [L('Discharge or separation papers'), L('Military and civilian medical evidence'), L('Supporting statements when applicable'), L('Dependent records if claiming added benefits')],
+    applicationMethods: ['online', 'mail'],
+    applicationLinks: [{ type: 'application', url: 'https://www.va.gov/disability/file-disability-claim-form-21-526ez/', label: L('File a VA disability claim') }],
+    eligibilitySourceUrl: 'https://www.va.gov/disability/eligibility/',
+    sourceUrls: ['https://www.va.gov/forms/21-526ez/', 'https://www.va.gov/disability/eligibility/'],
+    freeStatus: 'Free federal claim'
+  },
+  {
+    id: 'va-education-benefits',
+    organizationName: 'U.S. Department of Veterans Affairs',
+    programName: 'GI Bill and VA Education Benefits',
+    name: 'Apply for VA Education Benefits',
+    category: 'education',
+    services: ['education', 'veteran'],
+    description: L('Apply online for GI Bill and other VA education benefits for eligible service members, Veterans, survivors, and dependents.'),
+    url: 'https://www.va.gov/education/how-to-apply/',
+    eligibilitySummary: L('Eligibility depends on qualifying service or status as an eligible survivor or dependent and on the specific education benefit selected.'),
+    eligibilityStatus: 'structured',
+    eligibilityRules: [{ field: 'militaryEducationConnection', label: 'Qualifying service member, Veteran, survivor, or dependent status', operator: 'eq', value: 'yes' }],
+    requiredDocuments: [L('Social Security number'), L('Military service history'), L('Education and school information'), L('Bank account information for direct deposit')],
+    applicationMethods: ['online', 'mail'],
+    applicationLinks: [{ type: 'application', url: 'https://www.va.gov/education/how-to-apply/', label: L('Apply for VA education benefits') }],
+    eligibilitySourceUrl: 'https://www.va.gov/education/eligibility/',
+    sourceUrls: ['https://www.va.gov/education/eligibility/', 'https://www.va.gov/education/how-to-apply/'],
+    freeStatus: 'Free federal application'
+  },
+  {
+    id: 'lifeline-national-verifier',
+    organizationName: 'Universal Service Administrative Company',
+    programName: 'Lifeline',
+    name: 'Lifeline Phone and Internet Benefit Application',
+    category: 'internet',
+    services: ['internet', 'benefits', 'disability'],
+    description: L('Apply through the National Verifier for a monthly phone or internet service discount.'),
+    url: 'https://www.lifelinesupport.org/get-started/',
+    eligibilitySummary: L('Households may qualify through income at or below 135% of the federal poverty guidelines or participation in an accepted federal or Tribal assistance program. One benefit is allowed per household.'),
+    eligibilityStatus: 'structured',
+    eligibilityRules: [{ field: 'lifelineQualified', label: 'Qualifies by household income or accepted benefit-program participation', operator: 'eq', value: 'yes' }],
+    requiredDocuments: [L('Identity and address information'), L('Program participation proof or recent income documentation if requested'), L('Household worksheet when another adult at the address receives Lifeline')],
+    applicationMethods: ['online', 'mail'],
+    applicationLinks: [{ type: 'application', url: 'https://www.lifelinesupport.org/get-started/', label: L('Start the Lifeline application') }],
+    eligibilitySourceUrl: 'https://www.lifelinesupport.org/do-i-qualify/',
+    sourceUrls: ['https://www.lifelinesupport.org/do-i-qualify/', 'https://www.lifelinesupport.org/supporting-documents/'],
+    freeStatus: 'Application is free; benefit discounts eligible service'
+  },
+  {
+    id: 'irs-free-file',
+    organizationName: 'Internal Revenue Service',
+    programName: 'IRS Free File',
+    name: 'IRS Free File',
+    category: 'benefits',
+    services: ['benefits', 'family'],
+    description: L('Prepare and electronically file a federal tax return using guided software or Free File Fillable Forms.'),
+    url: 'https://www.irs.gov/file-your-taxes-for-free',
+    eligibilitySummary: L('For the 2026 filing season, guided software is available for adjusted gross income of $89,000 or less; Fillable Forms are available regardless of income for people comfortable preparing their own return. Partner criteria may vary.'),
+    eligibilityStatus: 'structured',
+    eligibilityRules: [{ field: 'income', label: 'Adjusted gross income for guided Free File', operator: 'lte', value: 89000 }],
+    eligibilityExceptions: [L('Free File Fillable Forms have no income limit but require users to prepare their own federal return.')],
+    requiredDocuments: [L('Taxpayer identification numbers'), L('Income statements such as W-2 and 1099 forms'), L('Prior-year adjusted gross income or account access'), L('Records supporting credits and deductions')],
+    applicationMethods: ['online'],
+    applicationLinks: [{ type: 'application', url: 'https://www.irs.gov/file-your-taxes-for-free', label: L('Use IRS Free File') }],
+    applicationDeadline: L('The regular 2026 federal filing deadline was April 15, 2026; extension and special deadline rules may apply.'),
+    eligibilitySourceUrl: 'https://www.irs.gov/file-your-taxes-for-free',
+    sourceUrls: ['https://www.irs.gov/file-your-taxes-for-free', 'https://www.irs.gov/individual-tax-filing'],
+    freeStatus: 'Free federal filing; state return availability varies'
+  },
+  {
+    id: 'fdic-money-smart',
+    organizationName: 'Federal Deposit Insurance Corporation',
+    programName: 'Money Smart',
+    name: 'FDIC Money Smart Financial Education',
+    category: 'benefits',
+    services: ['benefits', 'education'],
+    description: L('Use free financial education curricula and self-directed learning resources for banking, credit, saving, and money management.'),
+    url: 'https://www.fdic.gov/moneysmart',
+    eligibilitySummary: L('Open nationwide to learners of different ages and to educators; individual modules do not publish income or residency restrictions.'),
+    eligibilityStatus: 'open',
+    requiredDocuments: [],
+    applicationMethods: ['online'],
+    applicationLinks: [{ type: 'questionnaire', url: 'https://www.fdic.gov/moneysmart', label: L('Choose a Money Smart learning resource') }],
+    eligibilitySourceUrl: 'https://www.fdic.gov/moneysmart',
+    sourceUrls: ['https://www.fdic.gov/moneysmart'],
+    freeStatus: 'Free'
+  },
+  {
+    id: 'hud-housing-counseling',
+    organizationName: 'U.S. Department of Housing and Urban Development',
+    programName: 'HUD Housing Counseling',
+    name: 'HUD-Certified Housing Counseling',
+    category: 'shelter',
+    services: ['shelter', 'benefits', 'legal'],
+    description: L('Find a HUD participating agency for customized counseling on renting, eviction, homelessness, foreclosure, homebuying, and credit.'),
+    phone: '800-569-4287',
+    url: 'https://www.hud.gov/counseling',
+    eligibilitySummary: L('Open to people seeking housing counseling. Foreclosure, eviction, and homeless counseling are free; other counseling may have a reasonable fee.'),
+    eligibilityStatus: 'open',
+    requiredDocuments: [L('No document is required to search; a counselor may request housing, income, debt, or notice documents for individualized advice.')],
+    applicationMethods: ['online', 'phone'],
+    applicationLinks: [{ type: 'questionnaire', url: 'https://www.hud.gov/counseling', label: L('Find a HUD housing counselor') }],
+    eligibilitySourceUrl: 'https://www.hud.gov/hud-partners/single-family-about-housing-counseling',
+    sourceUrls: ['https://www.hud.gov/counseling', 'https://www.hud.gov/hud-partners/single-family-about-housing-counseling'],
+    freeStatus: 'Foreclosure, eviction, and homeless counseling are free; other fees may apply'
+  },
+  {
+    id: 'uscis-online-account',
+    organizationName: 'U.S. Citizenship and Immigration Services',
+    programName: 'USCIS Online Account',
+    name: 'USCIS Online Filing Account',
+    category: 'immigration',
+    services: ['immigration', 'legal'],
+    description: L('Create a secure USCIS account to file eligible forms, upload evidence, respond to notices, pay fees, and track a case.'),
+    url: 'https://myaccount.uscis.gov/create-account',
+    eligibilitySummary: L('People filing an eligible USCIS form or tracking a case may create their own account. Each individual needs a separate account; form-specific eligibility and fees still apply.'),
+    eligibilityStatus: 'structured',
+    eligibilityRules: [{ field: 'authorizedAccountUser', label: 'Account is created for the person or authorized legal representative using it', operator: 'eq', value: 'yes' }],
+    requiredDocuments: [L('A personal email address and authentication method'), L('Form-specific supporting evidence'), L('Online access code if linking a paper-filed case')],
+    applicationMethods: ['online'],
+    applicationLinks: [{ type: 'application', url: 'https://myaccount.uscis.gov/create-account', label: L('Create a USCIS online account') }],
+    eligibilitySourceUrl: 'https://www.uscis.gov/file-online',
+    sourceUrls: ['https://myaccount.uscis.gov/create-account', 'https://www.uscis.gov/file-online'],
+    freeStatus: 'Account is free; filing fees depend on the form and fee-waiver eligibility'
+  },
+  {
+    id: '988-lifeline',
+    organizationName: '988 Suicide & Crisis Lifeline',
+    programName: '988 Suicide & Crisis Lifeline',
+    name: '988 Suicide & Crisis Lifeline',
+    category: 'mental',
+    services: ['mental', 'veteran'],
+    description: L('Connect with a crisis counselor by phone, text, or online chat for suicidal crisis or emotional distress.'),
+    phone: '988',
+    url: 'https://988lifeline.org?oai_link_source=model_response_hotline',
+    eligibilitySummary: L('Available to anyone in suicidal crisis or emotional distress in the United States and its territories.'),
+    eligibilityStatus: 'open',
+    requiredDocuments: [],
+    applicationMethods: ['online', 'phone'],
+    applicationLinks: [{ type: 'contact', url: 'https://988lifeline.org/chat/?oai_link_source=model_response_hotline', label: L('Open 988 web chat') }],
+    eligibilitySourceUrl: 'https://988lifeline.org?oai_link_source=model_response_hotline',
+    sourceUrls: ['https://988lifeline.org?oai_link_source=model_response_hotline'],
+    hours: H.always,
+    onlineAlwaysAvailable: true,
+    freeStatus: 'Free and confidential'
+  },
+  {
+    id: 'acl-dial',
+    organizationName: 'Administration for Community Living',
+    programName: 'Disability Information and Access Locator',
+    name: 'DIAL Disability Resource Search',
+    category: 'disability',
+    services: ['disability', 'transport', 'benefits'],
+    description: L('Search for community organizations that support independent living, peer support, advocacy, skills training, and transitions.'),
+    url: 'https://dial.acl.gov/home',
+    eligibilitySummary: L('Open nationwide to people with disabilities and people helping them find independent-living support. Local program eligibility varies.'),
+    eligibilityStatus: 'open',
+    requiredDocuments: [],
+    applicationMethods: ['online'],
+    applicationLinks: [{ type: 'questionnaire', url: 'https://dial.acl.gov/home', label: L('Search DIAL by location') }],
+    eligibilitySourceUrl: 'https://dial.acl.gov/home',
+    sourceUrls: ['https://dial.acl.gov/home'],
+    freeStatus: 'Free search and referral'
+  },
+  {
+    id: 'identity-theft-recovery',
+    organizationName: 'Federal Trade Commission',
+    programName: 'IdentityTheft.gov Recovery Plan',
+    name: 'IdentityTheft.gov Report and Recovery Plan',
+    category: 'legal',
+    services: ['legal', 'benefits'],
+    description: L('Report identity theft to the FTC and generate a personalized Identity Theft Report and recovery plan.'),
+    url: 'https://www.identitytheft.gov/',
+    eligibilitySummary: L('Available nationwide to people reporting or recovering from identity theft. An account is optional but allows progress tracking and prefilled letters.'),
+    eligibilityStatus: 'open',
+    requiredDocuments: [L('Details of the identity theft and affected accounts'), L('Supporting notices or transaction records if available')],
+    applicationMethods: ['online', 'phone'],
+    applicationLinks: [{ type: 'questionnaire', url: 'https://www.identitytheft.gov/', label: L('Report identity theft and build a recovery plan') }],
+    eligibilitySourceUrl: 'https://www.identitytheft.gov/Steps',
+    sourceUrls: ['https://www.identitytheft.gov/', 'https://www.identitytheft.gov/Steps'],
+    freeStatus: 'Free federal report and recovery plan'
+  },
+  {
+    id: 'careeronestop-scholarship-finder',
+    organizationName: 'U.S. Department of Labor',
+    programName: 'CareerOneStop Scholarship Finder',
+    name: 'CareerOneStop Scholarship Finder',
+    category: 'education',
+    services: ['education'],
+    description: L('Search thousands of scholarships, fellowships, grants, loans, prizes, and other education awards, then continue to the sponsor.'),
+    url: 'https://www.careeronestop.org/toolkit/training/find-scholarships.aspx',
+    eligibilitySummary: L('The search is open nationwide. Each award has separate residence, study-level, affiliation, deadline, and application requirements that must be confirmed with the sponsor.'),
+    eligibilityStatus: 'no_restrictions_listed',
+    requiredDocuments: [L('No documents are needed to search; each scholarship sponsor publishes its own application requirements.')],
+    applicationMethods: ['online'],
+    applicationLinks: [{ type: 'questionnaire', url: 'https://www.careeronestop.org/toolkit/training/find-scholarships.aspx', label: L('Search scholarships and awards') }],
+    eligibilitySourceUrl: 'https://www.careeronestop.org/toolkit/training/find-scholarships.aspx',
+    sourceUrls: ['https://www.careeronestop.org/toolkit/training/find-scholarships.aspx'],
+    freeStatus: 'Free search; awards have separate terms'
+  }
+].map(resource => ({
+  ...resource,
+  source: resource.organizationName,
+  verified: VERIFIED,
+  lastVerified: VERIFIED,
+  eligibilityLastVerified: VERIFIED,
+  applicationLastVerified: VERIFIED,
+  verificationPeriodDays: 90,
+  eligibilityResearchStatus: resource.eligibilityRules?.length ? 'rules_extracted' : 'no_public_restrictions'
+}));
+
+resourceRecords.push(...nationwideActionPrograms);
+
 const NATIONWIDE_IDS = new Set([
   '211', 'findhelp', 'hud', 'feeding-america', 'usda-hunger', 'hrsa', 'samhsa',
   'lawhelp', 'benefit-finder', 'snap', 'job-centers', 'community-action',
-  'salvation-army', 'catholic-charities', 'federal-student-aid-fafsa'
+  'salvation-army', 'catholic-charities', 'federal-student-aid-fafsa',
+  ...nationwideActionPrograms.map(resource => resource.id)
 ]);
 
 const OPEN_NATIONWIDE = new Set(['211', 'usda-hunger', 'samhsa', 'job-centers']);
@@ -1091,11 +1573,24 @@ const LOCAL_PROVIDER_REQUIRED = new Set([
 
 export const resources = resourceRecords.map(resource => {
   if (!NATIONWIDE_IDS.has(String(resource.id))) {
-    return { scope: 'location', verificationPeriodDays: resource.verificationPeriodDays || 90, ...resource };
+    return {
+      scope: 'location',
+      verificationPeriodDays: resource.verificationPeriodDays || 90,
+      ...resource,
+      organizationName: resource.organizationName || resource.name,
+      programName: resource.programName || resource.name,
+      eligibilityResearchStatus: resource.eligibilityResearchStatus
+        || (resource.eligibilityRules?.length ? 'rules_extracted'
+          : ['no_restrictions_listed', 'open'].includes(resource.eligibilityStatus) ? 'no_public_restrictions' : 'pending')
+    };
   }
-  const eligibilityStatus = OPEN_NATIONWIDE.has(String(resource.id)) ? 'open' : 'varies';
+  const eligibilityStatus = resource.eligibilityStatus
+    || (OPEN_NATIONWIDE.has(String(resource.id)) ? 'open' : 'varies');
   const requiresLocalProvider = LOCAL_PROVIDER_REQUIRED.has(String(resource.id));
-  const onlineOnly = !['211', 'usda-hunger', 'samhsa'].includes(String(resource.id));
+  const onlineOnly = resource.onlineOnly
+    ?? !['211', 'usda-hunger', 'samhsa', 'healthcare-marketplace-application', 'va-health-care-application',
+      'va-disability-claim', 'va-education-benefits', 'hud-housing-counseling', 'identity-theft-recovery',
+      '988-lifeline'].includes(String(resource.id));
   const applicationMethods = [
     ...(resource.phone ? ['phone'] : []),
     ...(resource.url ? ['online'] : []),
@@ -1103,6 +1598,8 @@ export const resources = resourceRecords.map(resource => {
   ];
   return {
     ...resource,
+    organizationName: resource.organizationName || resource.name,
+    programName: resource.programName || resource.name,
     scope: requiresLocalProvider ? 'provider-directory' : 'nationwide-online',
     onlineOnly,
     requiresLocalProvider,
@@ -1110,6 +1607,7 @@ export const resources = resourceRecords.map(resource => {
     whoItHelps: resource.eligibility,
     eligibilitySummary: resource.eligibility,
     eligibilityStatus,
+    eligibilitySourceUrl: resource.eligibilitySourceUrl || resource.url || '',
     applicationMethods: resource.applicationMethods || applicationMethods,
     requiredDocuments: resource.requiredDocuments || (requiresLocalProvider
       ? [L('Document requirements are set by the program or local provider shown after you search.')]
