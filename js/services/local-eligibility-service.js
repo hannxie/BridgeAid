@@ -1,5 +1,5 @@
 import { evaluateEligibility } from './eligibility-service.js';
-import { normalizeResource } from './resource-service.js?v=10';
+import { normalizeResource } from './resource-service.js?v=11';
 
 function locationTokens(value) {
   return String(value || '')
@@ -88,7 +88,7 @@ export function evaluateLocalEligibility(resource, location, answers = {}) {
       && ['no_restrictions_listed', 'open'].includes(program.eligibilityStatus);
     return {
       status: noListedRequirements
-        ? 'No eligibility requirements listed'
+        ? 'No eligibility requirements published'
         : 'Eligibility information temporarily unavailable',
       passed: [],
       failed: [],

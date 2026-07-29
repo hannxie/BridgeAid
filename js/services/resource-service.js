@@ -46,6 +46,17 @@ export function textFor(value, language = 'en') {
   return value[language] || value.en || '';
 }
 
+function fallbackDescription(resource, language = 'en') {
+  const category = String(resource.category || 'community support').replace(/_/g, ' ');
+  const location = resource.address || resource.city || resource.county || '';
+  const descriptions = {
+    en: `A ${location ? 'local ' : ''}${category} listing for people seeking community support. Confirm services, eligibility, hours, and the next step with the provider before relying on it.`,
+    es: `Un recurso ${location ? 'local ' : ''}de ${category} para personas que buscan apoyo comunitario. Confirme los servicios, la elegibilidad, el horario y el siguiente paso con el proveedor.`,
+    zh: `面向需要社区支持者的${location ? '本地' : ''}${category}资源。依赖该信息前，请向服务机构确认服务、资格、时间和下一步。`
+  };
+  return descriptions[language] || descriptions.en;
+}
+
 export function normalizeResource(resource, language = 'en') {
   const rawLatitude = resource.latitude ?? resource.lat;
   const rawLongitude = resource.longitude ?? resource.lng;
@@ -71,7 +82,7 @@ export function normalizeResource(resource, language = 'en') {
     requiresLocalProvider: Boolean(resource.requiresLocalProvider),
     subcategories: Array.isArray(resource.subcategories) ? resource.subcategories : [],
     services,
-    description: textFor(resource.description, language),
+    description: textFor(resource.description, language) || fallbackDescription(resource, language),
     phone: resource.phone || '',
     email: resource.email || '',
     address: resource.address || '',
@@ -296,6 +307,43 @@ export function cacheKey(location, category, radius) {
     .replace(/\s+/g, ' ')
     .replace(/\s*,\s*/g, ',');
   return `${normalizedLocation}|${category || 'all'}|${Number(radius) || 5}`;
+}
+
+function normalizedSearchText(value) {
+  return String(value || '')
+    .normalize('NFKC')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .replace(/\s*,\s*/g, ',');
+}
+
+export function normalizeSearchParameters(parameters = {}) {
+  const filters = Object.fromEntries(Object.entries(parameters.filters || {})
+    .filter(([, value]) => value !== '' && value !== false && value !== null && value !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right)));
+  return {
+    location: normalizedSearchText(parameters.location),
+    radius: Math.max(1, Number(parameters.radius) || 5),
+    category: normalizedSearchText(parameters.category) || 'all',
+    categories: [...new Set((parameters.categories || []).map(normalizedSearchText).filter(Boolean))].sort(),
+    situation: normalizedSearchText(parameters.situation),
+    filters,
+    sort: normalizedSearchText(parameters.sort) || 'relevance'
+  };
+}
+
+export function searchSignature(parameters = {}) {
+  const normalized = normalizeSearchParameters(parameters);
+  return [
+    normalized.location,
+    normalized.radius,
+    normalized.category,
+    normalized.categories.join(','),
+    normalized.situation,
+    JSON.stringify(normalized.filters),
+    normalized.sort
+  ].join('|');
 }
 
 export function coordinateCacheKey(point, category, radius) {

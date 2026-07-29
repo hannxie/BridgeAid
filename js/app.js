@@ -3,8 +3,8 @@ import {
   keywordMap,
   resources as sourceResources,
   nationwideResources
-} from '../data/resources.js?v=10';
-import { translate, detectMessageLanguage, requestedLanguage } from './localization.js?v=10';
+} from '../data/resources.js?v=11';
+import { translate, detectMessageLanguage, requestedLanguage } from './localization.js?v=11';
 import {
   safeStorageGet,
   safeStorageSet,
@@ -24,13 +24,15 @@ import {
   mergeDuplicates,
   sortResources,
   resourceIsFresh,
-  freshResources
-} from './services/resource-service.js?v=10';
+  freshResources,
+  searchSignature
+} from './services/resource-service.js?v=11';
 import {
   geocodeLocation,
   fetchNearbyResources,
-  geocodeResourceAddresses
-} from './services/location-service.js?v=10';
+  geocodeResourceAddresses,
+  suggestLocations
+} from './services/location-service.js?v=11';
 import {
   formatScheduleTime,
   resourceScheduleState,
@@ -50,13 +52,13 @@ import {
   localEligibilityQuestions,
   evaluateLocalEligibility,
   servesLocation
-} from './services/local-eligibility-service.js?v=10';
+} from './services/local-eligibility-service.js?v=11';
 import { registrationGuidance } from './services/registration-service.js';
 import {
   answerGroundedAssistant,
   assistantCategory,
   locationFromMessage
-} from './services/grounded-assistant.js?v=10';
+} from './services/grounded-assistant.js?v=11';
 import {
   createCorrectionReport,
   queueCorrection,
@@ -71,6 +73,7 @@ import {
   removePlanResource,
   clearPlan as emptyPlan
 } from './services/helper-plan-service.js';
+import { buildDecisionPlan, normalizePlanConstraints } from './services/decision-plan-service.js';
 
 const STORAGE = {
   mode: 'bridgeaid-mode',
@@ -131,8 +134,9 @@ const state = {
   page: 'home',
   lang: ['en', 'zh', 'es'].includes(initialLanguage) ? initialLanguage : 'en',
   languageExplicit: Boolean(safeStorageGet(STORAGE.languageExplicit, false)),
-  category: 'all',
+  category: '',
   otherNeed: '',
+  situation: '',
   query: '',
   location: typeof initialLocation === 'string' ? initialLocation : '',
   coordinates: null,
@@ -165,11 +169,17 @@ const state = {
   errorKey: '',
   errorText: '',
   locationSuggestions: [],
+  locationSuggestionsLoading: false,
+  discoveryStatus: 'idle',
+  visibleResults: 20,
+  searchDiagnostics: [],
   noticeKey: '',
   offline: !navigator.onLine,
   storageWarning: false,
   helperIntake: safeObject(STORAGE.helperIntake),
   helperPlan: safeArray(STORAGE.helperPlan),
+  planConstraints: normalizePlanConstraints(),
+  decisionPlan: null,
   compareIds: new Set(),
   selectedResourceId: '',
   panel: '',
@@ -205,6 +215,8 @@ const translationCache = memoizeByKey(500);
 const responseCache = memoizeByKey(100);
 const searchCoordinator = createRequestCoordinator();
 const enrichmentCoordinator = createRequestCoordinator();
+const locationSuggestionCoordinator = createRequestCoordinator();
+let locationSuggestionSequence = 0;
 const tr = (key, variables = {}, language = state.lang) => {
   const cacheKey = `${language}|${key}|${JSON.stringify(variables)}`;
   if (translationCache.has(cacheKey)) return translationCache.get(cacheKey);
@@ -235,11 +247,13 @@ function persistHelper() {
 function captureSearchDraft() {
   const need = document.querySelector('#needSelect');
   const other = document.querySelector('#otherNeedInput');
+  const situation = document.querySelector('#situationInput');
   const location = document.querySelector('#locationInput');
   const radius = document.querySelector('#radius');
   const travelMode = document.querySelector('#travelMode');
   if (need) state.category = need.value;
   if (other) state.otherNeed = other.value;
+  if (situation) state.situation = situation.value;
   if (location) state.location = location.value;
   if (radius) state.radiusValue = Number(radius.value) || state.radiusValue;
   if (travelMode) state.travelMode = travelMode.value;
@@ -268,8 +282,54 @@ function detectCategories(query) {
   return [...new Set(detected)];
 }
 
+function desiredCategories() {
+  const structured = state.category && !['all', 'other'].includes(state.category)
+    ? [state.category]
+    : [];
+  return [...new Set([
+    ...structured,
+    ...detectCategories(`${state.otherNeed} ${state.situation} ${state.helperIntake.situation || ''}`)
+  ])].sort();
+}
+
 function searchNeed() {
-  return state.category === 'other' ? state.otherNeed.trim() : categoryLabel(state.category);
+  const need = state.category === 'other' ? state.otherNeed.trim() : categoryLabel(state.category);
+  return [need, state.situation.trim()].filter(Boolean).join(' · ');
+}
+
+function recordSearchDiagnostic(event, details = {}) {
+  const entry = {
+    at: new Date().toISOString(),
+    event,
+    key: state.activeSearchKey,
+    location: state.location,
+    category: state.category,
+    resultCount: state.liveResults.length,
+    ...details
+  };
+  state.searchDiagnostics = [...state.searchDiagnostics, entry].slice(-50);
+  console.info('[BridgeAid search]', entry);
+  return entry;
+}
+
+function mergeSearchResults(existing, incoming, desired = []) {
+  return rankResources(mergeDuplicates([
+    ...(existing || []),
+    ...(incoming || [])
+  ]), { categories: desired });
+}
+
+function applySituationFilters(text) {
+  const value = String(text || '').toLowerCase();
+  if (/no (?:photo )?(?:id|identification)|without (?:an? )?(?:id|identification)|do(?:es)? not have (?:an? )?(?:id|identification)|sin identificaci[oó]n/.test(value)) {
+    state.filters.noId = true;
+  }
+  if (/tonight|today|this evening|esta noche|hoy|今晚|今天/.test(value)) {
+    state.filters.availableToday = true;
+  }
+  if (/wheelchair|silla de ruedas|轮椅/.test(value)) {
+    state.filters.accessible = true;
+  }
 }
 
 function effectiveRadiusMiles() {
@@ -284,12 +344,10 @@ function distanceDisplay(miles) {
 
 function staticMatches() {
   if (!state.searched) return [];
-  const wanted = state.category && !['all', 'other'].includes(state.category)
-    ? [state.category]
-    : detectCategories(state.otherNeed);
+  const wanted = desiredCategories();
   let rows = state.storedResults
     .filter(resource => String(resource.id) !== '211')
-    .filter(resource => resource.scope !== 'nationwide-online')
+    .filter(resource => (resource.scope || 'location') === 'location')
     .filter(resource => resourceIsFresh(resource))
     .map(resource => normalizeResource(resource, state.lang));
   rows = rows.filter(resource => {
@@ -406,16 +464,31 @@ function statusMessages() {
     ${state.storageWarning ? `<div class="error-state">${tr('storageBlocked')}</div>` : ''}
     ${state.errorKey ? `<div class="error-state">${tr(state.errorKey)}${state.errorKey === 'searchUnavailable' ? ` <button class="ghost retry-search" data-retry-search>${tr('retrySearch')}</button>` : ''}</div>` : ''}
     ${state.errorText ? `<div class="error-state">${esc(state.errorText)}</div>` : ''}
-    ${state.locationSuggestions.length ? `<div class="location-suggestions">
-      <strong>${tr('locationSuggestions')}</strong>
-      <div>${state.locationSuggestions.map(choice => `<button class="ghost" data-location-suggestion="${attr(choice.label)}" data-lat="${attr(choice.lat)}" data-lng="${attr(choice.lng)}">${esc(choice.label)}</button>`).join('')}</div>
-    </div>` : ''}
   </div>`;
 }
 
 function categoryOptions(selected = state.category) {
-  return `${CATEGORY_CONFIG.map(item => `<option value="${item.id}" ${selected === item.id ? 'selected' : ''}>${tr(item.key)}</option>`).join('')}
+  return `<option value="" ${selected ? '' : 'selected'}>${tr('chooseNeed')}</option>
+    ${CATEGORY_CONFIG.filter(item => item.id !== 'all').map(item => `<option value="${item.id}" ${selected === item.id ? 'selected' : ''}>${tr(item.key)}</option>`).join('')}
     <option value="other" ${selected === 'other' ? 'selected' : ''}>${tr('needOther')}</option>`;
+}
+
+function locationSuggestionMarkup(target = 'search') {
+  if (state.locationSuggestionsLoading) {
+    return `<div class="location-suggestions loading" role="status">${tr('locationSuggestionsLoading')}</div>`;
+  }
+  if (!state.locationSuggestions.length) return '';
+  return `<div class="location-suggestions" role="listbox" aria-label="${attr(tr('locationSuggestions'))}">
+    <strong>${tr('locationSuggestions')}</strong>
+    <div>${state.locationSuggestions.slice(0, 5).map(choice =>
+      `<button type="button" class="ghost" role="option" data-location-target="${attr(target)}" data-location-suggestion="${attr(choice.label)}" data-lat="${attr(choice.lat)}" data-lng="${attr(choice.lng)}">${esc(choice.label)}</button>`).join('')}</div>
+  </div>`;
+}
+
+function updateLocationSuggestionDom() {
+  document.querySelectorAll('[data-location-suggestions]').forEach(container => {
+    container.innerHTML = locationSuggestionMarkup(container.dataset.locationTarget || 'search');
+  });
 }
 
 function radiusOptions() {
@@ -431,11 +504,12 @@ function searchBox(compact = false) {
     <div class="search-primary-row">
       <label class="search-location">
         <span>${tr('locationLabel')}</span>
-        <input id="locationInput" name="location" value="${attr(state.location)}" placeholder="${attr(tr('locationPlaceholder'))}" autocomplete="postal-code" aria-describedby="location-privacy">
+        <input id="locationInput" name="location" value="${attr(state.location)}" placeholder="${attr(tr('locationPlaceholder'))}" autocomplete="off" required aria-required="true" aria-describedby="location-privacy" aria-controls="location-suggestions">
+        <div id="location-suggestions" data-location-suggestions data-location-target="search">${locationSuggestionMarkup('search')}</div>
       </label>
       <label class="search-service">
         <span>${tr('needLabel')}</span>
-        <select id="needSelect" name="need">${categoryOptions()}</select>
+        <select id="needSelect" name="need" required aria-required="true">${categoryOptions()}</select>
       </label>
       <label class="search-distance">
         <span>${tr('radius')}</span>
@@ -445,8 +519,12 @@ function searchBox(compact = false) {
     </div>
     ${state.category === 'other' ? `<label class="search-other">
       <span>${tr('needOtherLabel')}</span>
-      <input id="otherNeedInput" name="otherNeed" value="${attr(state.otherNeed)}" placeholder="${attr(tr('needOtherPlaceholder'))}">
+      <input id="otherNeedInput" name="otherNeed" value="${attr(state.otherNeed)}" placeholder="${attr(tr('needOtherPlaceholder'))}" required>
     </label>` : ''}
+    <label class="search-situation">
+      <span>${tr('situationLabel')} <small>${tr('optional')}</small></span>
+      <textarea id="situationInput" name="situation" rows="2" placeholder="${attr(tr('situationPlaceholder'))}">${esc(state.situation)}</textarea>
+    </label>
     <div class="search-options-row">
       <small id="location-privacy">${tr('locationPrivacy')}</small>
       <label><span>${tr('distanceUnit')}</span><select id="distanceUnit" name="unit">
@@ -463,17 +541,18 @@ function searchBox(compact = false) {
   </form>`;
 }
 
-function helperField(name, labelKey, type = 'text', options = []) {
+function helperField(name, labelKey, type = 'text', options = [], required = false) {
   const value = state.helperIntake[name] ?? '';
+  const requirement = required ? `<strong class="required-label">${tr('required')}</strong>` : `<small>${tr('optional')}</small>`;
   if (type === 'select') {
-    return `<label><span>${tr(labelKey)} <small>${tr('optional')}</small></span>
-      <select name="${name}" data-intake>
+    return `<label><span>${tr(labelKey)} ${requirement}</span>
+      <select name="${name}" data-intake ${required ? 'required aria-required="true"' : ''}>
         <option value="">${tr('chooseAnswer')}</option>
         ${options.map(option => `<option value="${option.value}" ${value === option.value ? 'selected' : ''}>${tr(option.key)}</option>`).join('')}
       </select>
     </label>`;
   }
-  return `<label><span>${tr(labelKey)} <small>${tr('optional')}</small></span><input name="${name}" value="${attr(value)}" data-intake></label>`;
+  return `<label><span>${tr(labelKey)} ${requirement}</span><input name="${name}" value="${attr(value)}" data-intake ${required ? 'required aria-required="true"' : ''}></label>`;
 }
 
 function helperIntake() {
@@ -486,8 +565,14 @@ function helperIntake() {
     <p class="privacy-notice">${tr('privacyNotice')}</p>
     <p class="helper-explanation">${tr('sensitiveWarning')}</p>
     <div class="intake-grid">
-      ${helperField('immediateNeed', 'immediateNeed')}
-      ${helperField('location', 'location')}
+      ${helperField('serviceCategory', 'needLabel', 'select', CATEGORY_CONFIG
+        .filter(item => item.id !== 'all')
+        .map(item => ({ value: item.id, key: item.key })), true)}
+      ${helperField('immediateNeed', 'immediateNeed', 'text', [], true)}
+      <label><span>${tr('location')} <strong class="required-label">${tr('required')}</strong></span>
+        <input id="helperLocationInput" name="location" value="${attr(state.helperIntake.location || '')}" data-intake required aria-required="true" autocomplete="off">
+        <div data-location-suggestions data-location-target="helper">${locationSuggestionMarkup('helper')}</div>
+      </label>
       ${helperField('safetyTonight', 'safetyTonight', 'select', [
         { value: 'safe', key: 'safe' },
         { value: 'notSafe', key: 'notSafe' },
@@ -526,6 +611,9 @@ function helperIntake() {
     </div>
     <label class="notes-field"><span>${tr('additionalNotes')} <small>${tr('localDeviceNote')}</small></span>
       <textarea name="notes" data-intake rows="3">${esc(state.helperIntake.notes || '')}</textarea>
+    </label>
+    <label class="notes-field"><span>${tr('situationLabel')} <small>${tr('optional')}</small></span>
+      <textarea name="situation" data-intake rows="3" placeholder="${attr(tr('situationPlaceholder'))}">${esc(state.helperIntake.situation || '')}</textarea>
     </label>
     ${state.helperIntake.safetyTonight === 'notSafe' ? `<div class="danger-notice">${tr('safetySupportNote')}</div>` : ''}
     <button class="primary" data-helper-search>${tr('buildOptions')}</button>
@@ -664,7 +752,12 @@ function resourceCard(raw, options = {}) {
     }[applicationLink.type] || 'openApplication')
     : tr('officialApplication');
   const address = resource.address || tr('addressUnavailable');
-  return `<article class="resource-card" data-resource-card="${attr(resource.id)}">
+  const verificationDate = resource.lastVerified
+    || resource.hoursLastVerified
+    || (resource.dateDiscovered
+      ? tr('notYetVerified', { date: new Date(resource.dateDiscovered).toLocaleDateString(state.lang) })
+      : tr('nonePublished'));
+  return `<article class="resource-card category-${attr(resource.category)}" data-resource-card="${attr(resource.id)}">
     <div class="card-top">
       <span class="tag">${categoryIcon(resource.category)} ${categoryLabel(resource.category)}</span>
       <span class="verification-badge ${schedule.status.code === 'hours_not_listed' ? 'uncertain' : 'confirmed'}"><span aria-hidden="true">${schedule.status.code === 'hours_not_listed' ? '!' : '✓'}</span>${schedule.label}</span>
@@ -683,7 +776,7 @@ function resourceCard(raw, options = {}) {
           : tr('eligibilityTemporarilyUnavailable'))}</dd>
       <dt>${tr('registrationRequirement')}</dt><dd>${esc(resource.registrationRequirement || tr('registrationUseContact'))}</dd>
     </dl>
-    <p class="verification-line"><strong>${tr('lastVerified')}:</strong> ${esc(resource.lastVerified || resource.hoursLastVerified || tr('nonePublished'))} · ${esc(verificationText(resource))}</p>
+    <p class="verification-line"><strong>${tr('lastVerified')}:</strong> ${esc(verificationDate)} · ${esc(verificationText(resource))}</p>
     <div class="card-actions action-priority">
       ${resource.phone ? `<a class="primary" href="tel:${attr(phoneHref(resource.phone))}">☎ ${tr('call')}</a>` : ''}
       <a class="secondary" href="${attr(directionsUrl(resource, 'walking'))}" target="_blank" rel="noopener noreferrer">⌖ ${tr('walkingDirections')}</a>
@@ -721,8 +814,60 @@ function comparisonPanel(resources) {
   </section>`;
 }
 
+function planConstraintValue(name) {
+  return state.planConstraints?.[name] ?? '';
+}
+
+function decisionPlanPanel(resources) {
+  const plan = state.decisionPlan;
+  return `<section class="decision-planner" aria-labelledby="decision-plan-title">
+    <div class="section-head">
+      <div><span class="step-label">${tr('optional')}</span><h2 id="decision-plan-title">${tr('buildActionPlan')}</h2></div>
+    </div>
+    <p>${tr('actionPlanIntro')}</p>
+    <form id="actionPlanForm" class="constraint-grid">
+      <label><span>${tr('urgency')}</span><select name="urgency">
+        <option value="immediate" ${planConstraintValue('urgency') === 'immediate' ? 'selected' : ''}>${tr('urgencyImmediate')}</option>
+        <option value="today" ${planConstraintValue('urgency') === 'today' ? 'selected' : ''}>${tr('urgencyToday')}</option>
+        <option value="longTerm" ${planConstraintValue('urgency') === 'longTerm' ? 'selected' : ''}>${tr('urgencyLongTerm')}</option>
+      </select></label>
+      <label><span>${tr('availableDays')}</span><input name="availableDays" value="${attr(planConstraintValue('availableDays'))}" placeholder="${attr(tr('availableDaysPlaceholder'))}"></label>
+      <label><span>${tr('availableTimes')}</span><input name="availableTimes" value="${attr(planConstraintValue('availableTimes'))}" placeholder="${attr(tr('availableTimesPlaceholder'))}"></label>
+      <label><span>${tr('transportation')}</span><select name="transportation">
+        <option value="walking" ${planConstraintValue('transportation') === 'walking' ? 'selected' : ''}>${tr('walking')}</option>
+        <option value="transit" ${planConstraintValue('transportation') === 'transit' ? 'selected' : ''}>${tr('transit')}</option>
+        <option value="driving" ${planConstraintValue('transportation') === 'driving' ? 'selected' : ''}>${tr('driving')}</option>
+      </select></label>
+      <label><span>${tr('maximumDistance')}</span><input type="number" min="1" max="25" step="1" name="maxDistance" value="${attr(planConstraintValue('maxDistance'))}"></label>
+      <label><span>${tr('transportBudget')}</span><input type="number" min="0" step="0.01" name="transportationBudget" value="${attr(planConstraintValue('transportationBudget'))}"></label>
+      <label><span>${tr('walkingLimit')}</span><input type="number" min="0" step="0.1" name="walkingLimit" value="${attr(planConstraintValue('walkingLimit'))}"></label>
+      <label><span>${tr('applicationDeadline')}</span><input type="date" name="deadline" value="${attr(planConstraintValue('deadline'))}"></label>
+      <label class="wide"><span>${tr('physicalLimitations')}</span><input name="physicalLimitations" value="${attr(planConstraintValue('physicalLimitations'))}"></label>
+      <label class="filter-check"><input type="checkbox" name="wheelchairAccessible" ${planConstraintValue('wheelchairAccessible') ? 'checked' : ''}><span>${tr('wheelchairAccessible')}</span></label>
+      <label class="filter-check"><input type="checkbox" name="childcareNeeded" ${planConstraintValue('childcareNeeded') ? 'checked' : ''}><span>${tr('childcareNeeded')}</span></label>
+      <button class="primary wide" type="submit" ${resources.length ? '' : 'disabled'}>${tr('generatePlan')}</button>
+    </form>
+    ${plan ? `<div class="generated-plan" aria-live="polite">
+      <h3>${tr('yourActionPlan')}</h3>
+      <p>${esc(plan.explanation)}</p>
+      ${plan.steps.length ? `<ol>${plan.steps.map(step => `<li>
+        <strong>${esc(step.title)}</strong>
+        <p>${esc(step.action)}</p>
+        ${step.timing ? `<p><strong>${tr('timing')}:</strong> ${esc(step.timing)}</p>` : ''}
+        ${step.travel ? `<p><strong>${tr('travelEstimate')}:</strong> ${esc(step.travel)}</p>` : ''}
+        <p><strong>${tr('whyThisOrder')}:</strong> ${esc(step.reason)}</p>
+        <p><strong>${tr('completionEstimate')}:</strong> ${esc(step.completionConfidence.label)} — ${esc(step.completionConfidence.reason)}</p>
+      </li>`).join('')}</ol>` : `<div class="empty-state">${tr('noFeasiblePlan')}</div>`}
+      ${plan.tradeoffs.length ? `<h3>${tr('tradeoffs')}</h3><ul>${plan.tradeoffs.map(item => `<li>${esc(item)}</li>`).join('')}</ul>` : ''}
+      ${plan.excluded.length ? `<details><summary>${tr('excludedResults', { count: plan.excluded.length })}</summary><ul>${plan.excluded.map(item => `<li><strong>${esc(item.name)}</strong>: ${esc(item.reasons.join('; '))}</li>`).join('')}</ul></details>` : ''}
+      <p class="privacy-notice">${tr('planNoGuarantee')}</p>
+    </div>` : ''}
+  </section>`;
+}
+
 function findPage() {
   const resources = allResults();
+  const visibleResources = resources.slice(0, state.visibleResults);
   return `<main id="main" class="wrap section page">
     <div class="page-head">
       <div><span class="eyebrow">${tr('selfEyebrow')}</span><h1>${tr('searchResults')}</h1>
@@ -733,6 +878,7 @@ function findPage() {
     ${searchBox(true)}
     ${state.searched ? filtersPanel() : ''}
     ${state.loading ? `<div class="loading-state" role="status"><span class="spinner" aria-hidden="true"></span><strong>${tr('loading')}</strong></div>` : ''}
+    ${state.discoveryStatus === 'discovering' ? `<div class="cache-state">${tr('discoveryRunning')}</div>` : ''}
     ${comparisonPanel(resources)}
     <div class="${state.mode === 'helper' && state.searched ? 'results-layout' : ''}">
       <section aria-labelledby="resource-list-title">
@@ -743,11 +889,13 @@ function findPage() {
             <option value="relevance" ${state.sortBy === 'relevance' ? 'selected' : ''}>${tr('sortRelevant')}</option>
             <option value="openSoonest" ${state.sortBy === 'openSoonest' ? 'selected' : ''}>${tr('sortOpenSoonest')}</option>
           </select></label></div>
-          <div class="resource-list">${resources.length ? resources.map(resource => resourceCard(resource)).join('') : `<div class="empty-state">${tr('noResults')}</div>`}</div>`
+          <div class="resource-list">${resources.length ? visibleResources.map(resource => resourceCard(resource)).join('') : `<div class="empty-state">${tr('noResults')}</div>`}</div>
+          ${visibleResources.length < resources.length ? `<button class="secondary load-more" data-load-more>${tr('loadMore', { remaining: resources.length - visibleResources.length })}</button>` : ''}`
           : `<div class="empty-state">${tr('noHomeResources')}</div>`}
       </section>
       ${state.mode === 'helper' && state.searched ? planPanel() : ''}
     </div>
+    ${state.searched ? decisionPlanPanel(resources) : ''}
   </main>`;
 }
 
@@ -815,7 +963,7 @@ function nationwideCard(raw) {
     : resource.eligibilityStatus === 'open'
       ? tr('onlineEligibilityOpen')
       : tr('onlineEligibilityVaries');
-  return `<article class="resource-card nationwide-card" data-resource-card="${attr(resource.id)}">
+  return `<article class="resource-card nationwide-card category-${attr(resource.category)}" data-resource-card="${attr(resource.id)}">
     <div class="card-top">
       <span class="tag">${categoryIcon(resource.category)} ${categoryLabel(resource.category)}</span>
       <span class="verification-badge confirmed"><span aria-hidden="true">✓</span>${tr('nationwideAccess')}</span>
@@ -842,7 +990,9 @@ function nationwideCard(raw) {
 }
 
 function nationwidePage() {
-  const normalized = nationwideResources.map(resource => normalizeResource(resource, state.lang));
+  const normalized = freshResources(nationwideResources)
+    .filter(resource => !resource.requiresLocalProvider)
+    .map(resource => normalizeResource(resource, state.lang));
   const categoriesAvailable = [...new Set(normalized
     .map(resource => resource.category)
     .filter(category => category !== 'all'))].sort();
@@ -856,7 +1006,9 @@ function nationwidePage() {
       return resource.eligibilityStatus === state.onlineFilters.eligibility;
     })
     .filter(resource => state.onlineFilters.applicationMethod === 'all'
-      || resource.applicationMethods.includes(state.onlineFilters.applicationMethod))
+      || (state.onlineFilters.applicationMethod === 'multiple'
+        ? resource.applicationMethods.length > 1
+        : resource.applicationMethods.includes(state.onlineFilters.applicationMethod)))
     .sort((a, b) => a.name.localeCompare(b.name, state.lang, { sensitivity: 'base' }));
   return `<main id="main" class="wrap section page nationwide-page">
     <span class="eyebrow">${tr('nationwideEyebrow')}</span>
@@ -877,7 +1029,9 @@ function nationwidePage() {
         <option value="all">${tr('filterAll')}</option>
         <option value="online" ${state.onlineFilters.applicationMethod === 'online' ? 'selected' : ''}>${tr('applyOnline')}</option>
         <option value="phone" ${state.onlineFilters.applicationMethod === 'phone' ? 'selected' : ''}>${tr('applyByPhone')}</option>
-        <option value="localProvider" ${state.onlineFilters.applicationMethod === 'localProvider' ? 'selected' : ''}>${tr('applyThroughLocalProvider')}</option>
+        <option value="mail" ${state.onlineFilters.applicationMethod === 'mail' ? 'selected' : ''}>${tr('applyByMail')}</option>
+        <option value="inPerson" ${state.onlineFilters.applicationMethod === 'inPerson' ? 'selected' : ''}>${tr('applyInPerson')}</option>
+        <option value="multiple" ${state.onlineFilters.applicationMethod === 'multiple' ? 'selected' : ''}>${tr('multipleMethods')}</option>
       </select></label>
     </section>
     <p class="results-summary">${tr('resultsCount', { count: filtered.length })}</p>
@@ -890,10 +1044,13 @@ function nationwidePage() {
 function savedPage() {
   const available = mergeDuplicates([...state.liveResults, ...sourceResources])
     .filter(resource => String(resource.id) !== '211')
+    .filter(resource => resourceIsFresh(resource))
     .map(resource => normalizeResource(resource, state.lang));
   const saved = available.filter(resource => state.saved.has(resource.id));
+  const unavailableCount = [...state.saved].filter(id => !available.some(resource => resource.id === id)).length;
   return `<main id="main" class="wrap section page">
     <div class="page-head"><h1>${tr('savedTitle')}</h1></div>
+    ${unavailableCount ? `<div class="error-state">${tr('savedNeedsVerification', { count: unavailableCount })} <button class="ghost" data-retry-saved>${tr('retryVerification')}</button></div>` : ''}
     <div class="resource-list">${saved.length ? saved.map(resource =>
       resource.scope === 'nationwide-online' ? nationwideCard(resource) : resourceCard(resource)).join('') : `<div class="empty-state">${tr('savedEmpty')}</div>`}</div>
   </main>`;
@@ -1037,7 +1194,7 @@ function statusTranslation(status) {
     'Likely eligible': 'likelyEligible',
     'Possibly eligible': 'possiblyEligible',
     'Likely not eligible': 'likelyNotEligible',
-    'No eligibility requirements listed': 'noEligibilityRequirementsListed',
+    'No eligibility requirements published': 'noEligibilityRequirementsListed',
     'Eligibility information temporarily unavailable': 'eligibilityTemporarilyUnavailable'
   }[status] || 'eligibilityTemporarilyUnavailable';
 }
@@ -1097,7 +1254,7 @@ function applicationMethods(methods = []) {
 
 function eligibilityResult(result, resource) {
   if (!result) return '';
-  const noPublishedRules = result.status === 'No eligibility requirements listed';
+  const noPublishedRules = result.status === 'No eligibility requirements published';
   const temporarilyUnavailable = result.status === 'Eligibility information temporarily unavailable';
   return `<section class="eligibility-result" aria-live="polite">
     <h2>${tr(statusTranslation(result.status))}</h2>
@@ -1365,14 +1522,18 @@ async function performNearbySearch({
   state.locationSuggestions = [];
   state.noticeKey = '';
   state.loading = true;
+  state.discoveryStatus = 'discovering';
+  recordSearchDiagnostic('search_started', { radius, desired });
   if (!quiet) render();
   const freshCached = cached && !cached.stale && cached.resources.length ? cached : null;
   if (freshCached) {
-    state.liveResults = rankResources(mergeDuplicates(freshCached.resources), { categories: desired });
+    state.liveResults = mergeSearchResults([], freshCached.resources, desired);
+    recordSearchDiagnostic('fresh_cache_rendered', { cachedCount: freshCached.resources.length });
     if (!quiet) render();
   }
   if (state.offline) {
     state.loading = false;
+    state.discoveryStatus = freshCached || staticMatches().length ? 'verified-results-available' : 'unavailable';
     if (!freshCached && !staticMatches().length) state.errorKey = 'searchUnavailable';
     if (!quiet) render();
     return state.liveResults;
@@ -1382,16 +1543,14 @@ async function performNearbySearch({
     if (state.activeSearchKey !== key) return state.liveResults;
     state.coordinates = { lat: point.lat, lng: point.lng };
     state.resolvedLocation = point.label || location;
-    const canonicalKey = coordinateCacheKey(point, state.category || 'all', radius);
+    const canonicalCategory = [state.category || 'all', ...desired].join(':');
+    const canonicalKey = coordinateCacheKey(point, canonicalCategory, radius);
     const canonicalCached = canonicalKey ? readCachedSearch(safeObject(STORAGE.cache), canonicalKey) : null;
     const reusableCached = canonicalCached && !canonicalCached.stale && canonicalCached.resources.length
       ? canonicalCached
       : freshCached;
     if (reusableCached) {
-      state.liveResults = rankResources(mergeDuplicates([
-        ...state.liveResults,
-        ...reusableCached.resources
-      ]), { categories: desired }).slice(0, 50);
+      state.liveResults = mergeSearchResults(state.liveResults, reusableCached.resources, desired);
       if (!quiet) render();
     }
     void enrichStoredEvidence(point, { key, location, quiet });
@@ -1401,25 +1560,25 @@ async function performNearbySearch({
       radius
     });
     if (desired.length) rows = rows.filter(resource => desired.includes(resource.category));
-    rows = rankResources(mergeDuplicates([
-      ...(reusableCached?.resources || []),
-      ...rows
-    ]), { categories: desired }).slice(0, 50);
+    rows = mergeSearchResults(reusableCached?.resources || [], rows, desired);
     let updatedCache = writeCachedSearch(safeObject(STORAGE.cache), key, rows);
     if (canonicalKey) updatedCache = writeCachedSearch(updatedCache, canonicalKey, rows);
     persist(STORAGE.cache, updatedCache);
     persist(STORAGE.searches, [...new Set([...safeArray(STORAGE.searches), location])].slice(-10));
     if (state.activeSearchKey !== key) return rows;
     state.liveResults = rows;
+    state.discoveryStatus = rows.length || staticMatches().length ? 'verified-results-available' : 'no-results-yet';
+    recordSearchDiagnostic('live_discovery_merged', { liveCount: rows.length });
     if (!quiet) render();
     void enrichmentCoordinator.run(`hours:${key}`, async () => {
       const checked = await researchMissingSchedules(rows);
-      const complete = rankResources(mergeDuplicates([...state.liveResults, ...checked]), { categories: desired }).slice(0, 50);
+      const complete = mergeSearchResults(state.liveResults, checked, desired);
       let checkedCache = writeCachedSearch(safeObject(STORAGE.cache), key, complete);
       if (canonicalKey) checkedCache = writeCachedSearch(checkedCache, canonicalKey, complete);
       persist(STORAGE.cache, checkedCache);
       if (state.activeSearchKey !== key) return checked;
       state.liveResults = complete;
+      recordSearchDiagnostic('verification_merge_completed', { verifiedCount: checked.length, total: complete.length });
       if (!quiet) render();
       return complete;
     });
@@ -1433,10 +1592,19 @@ async function performNearbySearch({
       } else {
         state.errorKey = 'searchUnavailable';
       }
+      state.discoveryStatus = staticMatches().length || state.liveResults.length
+        ? 'verified-results-available'
+        : 'unavailable';
+      recordSearchDiagnostic('search_failed', { code: error.code || 'SEARCH_FAILED', message: error.message });
     }
   } finally {
     if (state.activeSearchKey === key) {
       state.loading = false;
+      if (state.discoveryStatus === 'discovering') {
+        state.discoveryStatus = state.liveResults.length || staticMatches().length
+          ? 'verified-results-available'
+          : 'no-results-yet';
+      }
       if (!quiet) render();
     }
   }
@@ -1448,13 +1616,20 @@ async function searchNearby({ coordinates = null, quiet = false } = {}) {
   const category = state.category || 'all';
   const otherNeed = state.otherNeed;
   const radius = effectiveRadiusMiles();
-  const desired = category && !['all', 'other'].includes(category)
-    ? [category]
-    : detectCategories(otherNeed);
-  const key = cacheKey(location, category, radius);
+  const desired = desiredCategories();
+  const key = searchSignature({
+    location,
+    category,
+    categories: desired,
+    situation: `${otherNeed} ${state.situation}`,
+    radius,
+    filters: state.filters,
+    sort: state.sortBy
+  });
   const cache = safeObject(STORAGE.cache);
   const cached = readCachedSearch(cache, key);
   state.activeSearchKey = key;
+  recordSearchDiagnostic('search_normalized', { desired, radius });
   return searchCoordinator.run(key, () => performNearbySearch({
     coordinates,
     quiet,
@@ -1471,6 +1646,7 @@ async function submitSearch(form) {
   const data = new FormData(form);
   state.category = String(data.get('need') || '');
   state.otherNeed = String(data.get('otherNeed') || '').trim();
+  state.situation = String(data.get('situation') || '').trim();
   state.location = String(data.get('location') || '').trim();
   state.unit = String(data.get('unit') || state.unit);
   state.radiusValue = Number(data.get('radius')) || 5;
@@ -1492,9 +1668,32 @@ async function submitSearch(form) {
   state.page = 'find';
   state.storedResults = sourceResources;
   state.liveResults = [];
+  state.visibleResults = 20;
+  state.decisionPlan = null;
   persistShared();
   render();
   void searchNearby();
+}
+
+function generateDecisionPlan(form) {
+  const data = new FormData(form);
+  state.planConstraints = normalizePlanConstraints({
+    urgency: data.get('urgency'),
+    availableDays: data.get('availableDays'),
+    availableTimes: data.get('availableTimes'),
+    transportation: data.get('transportation'),
+    maxDistance: data.get('maxDistance'),
+    transportationBudget: data.get('transportationBudget'),
+    walkingLimit: data.get('walkingLimit'),
+    wheelchairAccessible: data.has('wheelchairAccessible'),
+    physicalLimitations: data.get('physicalLimitations'),
+    childcareNeeded: data.has('childcareNeeded'),
+    deadline: data.get('deadline')
+  });
+  const selectedIds = new Set(state.helperPlan.map(item => item.id));
+  const candidates = allResults().filter(resource => !selectedIds.size || selectedIds.has(resource.id));
+  state.decisionPlan = buildDecisionPlan(candidates, state.planConstraints);
+  render({ focus: '#decision-plan-title' });
 }
 
 function addToPlan(id) {
@@ -1560,6 +1759,8 @@ async function sendChat(form) {
     state.category = messageCategory;
     state.query = categoryLabel(messageCategory);
   }
+  state.situation = message;
+  applySituationFilters(message);
   render();
   await new Promise(resolve => requestAnimationFrame(resolve));
   const responseKey = [
@@ -1575,6 +1776,7 @@ async function sendChat(form) {
     .filter(resource => String(resource.id) !== '211')
     .filter(resource => resource.scope !== 'nationwide-online')
     .filter(resource => resourceIsFresh(resource))
+    .filter(resource => filterResources([resource], state.filters).length > 0)
     .filter(resource => {
       if (liveResourceIds.has(String(resource.id))) return true;
       const isLocationBound = Boolean(
@@ -1629,6 +1831,7 @@ async function sendChat(form) {
 app.addEventListener('submit', event => {
   event.preventDefault();
   if (event.target.matches('#searchForm')) submitSearch(event.target);
+  if (event.target.matches('#actionPlanForm')) generateDecisionPlan(event.target);
   if (event.target.matches('#chatForm')) sendChat(event.target);
   if (event.target.matches('#reportForm')) processReport(event.target);
 });
@@ -1687,12 +1890,22 @@ app.addEventListener('click', async event => {
   }
   if (target.matches('[data-location-suggestion]')) {
     state.location = target.dataset.locationSuggestion;
+    if (target.dataset.locationTarget === 'helper') {
+      state.helperIntake.location = state.location;
+      persistHelper();
+    }
     state.locationSuggestions = [];
     state.errorKey = '';
     state.coordinates = { lat: Number(target.dataset.lat), lng: Number(target.dataset.lng) };
     persistShared();
     render();
-    void searchNearby({ coordinates: state.coordinates });
+    if (target.dataset.locationTarget !== 'helper' && state.searched && state.category) {
+      void searchNearby({ coordinates: state.coordinates });
+    }
+  }
+  if (target.matches('[data-load-more]')) {
+    state.visibleResults += 20;
+    render({ focus: '[data-load-more]' });
   }
   if (target.matches('[data-save]')) {
     const id = target.dataset.save;
@@ -1744,9 +1957,10 @@ app.addEventListener('click', async event => {
   }
   if (target.matches('[data-helper-search]')) {
     state.otherNeed = state.helperIntake.immediateNeed || '';
-    state.category = detectCategories(state.otherNeed)[0] || 'other';
+    state.situation = state.helperIntake.situation || '';
+    state.category = state.helperIntake.serviceCategory || '';
     state.location = state.helperIntake.location || state.location;
-    if (!state.otherNeed || !state.location) {
+    if (!state.category || !state.otherNeed || !state.location) {
       state.errorKey = 'locationRequired';
       render();
       return;
@@ -1756,6 +1970,8 @@ app.addEventListener('click', async event => {
     state.page = 'find';
     state.storedResults = sourceResources;
     state.liveResults = [];
+    state.visibleResults = 20;
+    state.decisionPlan = null;
     persistHelper();
     persistShared();
     render();
@@ -1804,6 +2020,20 @@ app.addEventListener('click', async event => {
   if (target.matches('[data-retry-search]')) {
     state.errorKey = '';
     void searchNearby();
+  }
+  if (target.matches('[data-retry-saved]')) {
+    if (!state.location || !state.category) {
+      state.page = 'home';
+      state.errorKey = 'locationRequired';
+      render({ focus: '#locationInput' });
+    } else {
+      state.page = 'find';
+      state.searched = true;
+      state.errorKey = '';
+      render();
+      void searchNearby();
+    }
+    applySituationFilters(`${state.otherNeed} ${state.situation} ${state.helperIntake.identification || ''} ${state.helperIntake.accessibility || ''}`);
   }
   if (target.matches('[data-start-eligibility]')) {
     const resourceSelect = document.querySelector('#eligibilityResource');
@@ -1937,14 +2167,57 @@ app.addEventListener('change', event => {
 });
 
 let filterInputTimer = null;
+let locationInputTimer = null;
 app.addEventListener('input', event => {
   const target = event.target;
-  if (!target.matches('[data-filter-text]')) return;
-  clearTimeout(filterInputTimer);
-  filterInputTimer = setTimeout(() => {
-    state.filters[target.dataset.filterText] = target.value;
-    render();
-  }, 150);
+  if (target.matches('[data-intake]') && !target.matches('#helperLocationInput')) {
+    state.helperIntake[target.name] = target.value;
+    persistHelper();
+  }
+  if (target.matches('#locationInput, #helperLocationInput')) {
+    if (target.matches('#helperLocationInput')) {
+      state.helperIntake.location = target.value;
+      persistHelper();
+    } else {
+      state.location = target.value;
+    }
+    state.coordinates = null;
+    state.locationSuggestions = [];
+    clearTimeout(locationInputTimer);
+    const query = target.value.trim();
+    if (query.length < 2) {
+      state.locationSuggestionsLoading = false;
+      updateLocationSuggestionDom();
+      return;
+    }
+    const sequence = ++locationSuggestionSequence;
+    state.locationSuggestionsLoading = true;
+    updateLocationSuggestionDom();
+    locationInputTimer = setTimeout(async () => {
+      try {
+        const suggestions = await locationSuggestionCoordinator.run(query.toLowerCase(), () => suggestLocations(query));
+        if (sequence !== locationSuggestionSequence) return;
+        state.locationSuggestions = suggestions.slice(0, 5);
+      } catch {
+        if (sequence !== locationSuggestionSequence) return;
+        state.locationSuggestions = [];
+      } finally {
+        if (sequence === locationSuggestionSequence) {
+          state.locationSuggestionsLoading = false;
+          updateLocationSuggestionDom();
+        }
+      }
+    }, 250);
+    return;
+  }
+  applySituationFilters(`${state.otherNeed} ${state.situation}`);
+  if (target.matches('[data-filter-text]')) {
+    clearTimeout(filterInputTimer);
+    filterInputTimer = setTimeout(() => {
+      state.filters[target.dataset.filterText] = target.value;
+      render();
+    }, 150);
+  }
 });
 
 window.addEventListener('online', () => {

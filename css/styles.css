@@ -660,6 +660,210 @@ footer small {
     }
 }
 
+/* Acceptance-test refinements: category identity, autocomplete, pagination, and planning */
+.resource-card {
+    border-left: 5px solid var(--category-color, #496878)
+}
+
+.resource-card .tag {
+    border: 1px solid color-mix(in srgb, var(--category-color, #496878) 38%, white);
+    background: color-mix(in srgb, var(--category-color, #496878) 12%, white);
+    color: var(--category-color, #334f5d)
+}
+
+.category-food {
+    --category-color: #23663f
+}
+
+.category-shelter {
+    --category-color: #8a4d16
+}
+
+.category-health {
+    --category-color: #a22f3f
+}
+
+.category-mental {
+    --category-color: #6752a3
+}
+
+.category-family {
+    --category-color: #8a3d78
+}
+
+.category-transport {
+    --category-color: #245e9b
+}
+
+.category-hygiene {
+    --category-color: #24717a
+}
+
+.category-jobs {
+    --category-color: #5d5520
+}
+
+.category-education {
+    --category-color: #3157a6
+}
+
+.category-legal {
+    --category-color: #5c3b8b
+}
+
+.category-benefits {
+    --category-color: #17675f
+}
+
+.category-disability {
+    --category-color: #7a4d12
+}
+
+.category-veteran {
+    --category-color: #4c5f2f
+}
+
+.category-immigration {
+    --category-color: #8b3d52
+}
+
+.category-internet {
+    --category-color: #1f647e
+}
+
+.required-label {
+    color: #9b2c20;
+    font-size: .76rem;
+    text-transform: uppercase;
+    letter-spacing: .04em
+}
+
+.search-location {
+    position: relative
+}
+
+.search-situation {
+    display: grid;
+    gap: 6px;
+    max-width: 760px;
+    margin-top: 10px
+}
+
+.search-box-v2 textarea {
+    width: 100%;
+    min-height: 70px;
+    resize: vertical;
+    border: 1px solid var(--line);
+    border-radius: 11px;
+    background: var(--white);
+    padding: 11px 13px
+}
+
+[data-location-suggestions]:empty {
+    display: none
+}
+
+.search-location .location-suggestions {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    right: 0;
+    z-index: 20;
+    max-height: 310px;
+    overflow-y: auto;
+    box-shadow: var(--shadow)
+}
+
+.search-location .location-suggestions>div {
+    display: grid
+}
+
+.search-location .location-suggestions button {
+    width: 100%;
+    justify-content: flex-start;
+    text-align: left;
+    white-space: normal
+}
+
+.load-more {
+    display: block;
+    min-width: min(100%, 260px);
+    margin: 22px auto 0
+}
+
+.decision-planner {
+    margin-top: 28px;
+    border: 1px solid var(--line);
+    border-radius: 20px;
+    background: var(--white);
+    padding: 22px;
+    box-shadow: 0 6px 20px rgba(18, 59, 104, .06)
+}
+
+.constraint-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px
+}
+
+.constraint-grid label {
+    display: grid;
+    align-content: start;
+    gap: 6px;
+    color: var(--navy);
+    font-weight: 800
+}
+
+.constraint-grid input,
+.constraint-grid select {
+    width: 100%;
+    min-height: 44px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--white);
+    padding: 9px 11px
+}
+
+.constraint-grid .wide {
+    grid-column: 1 / -1
+}
+
+.generated-plan {
+    margin-top: 22px;
+    border-top: 1px solid var(--line);
+    padding-top: 20px
+}
+
+.generated-plan ol {
+    display: grid;
+    gap: 13px;
+    padding-left: 24px
+}
+
+.generated-plan ol>li {
+    border-radius: 12px;
+    background: var(--soft);
+    padding: 14px 16px
+}
+
+.generated-plan li p {
+    margin: 7px 0 0
+}
+
+@media(max-width:760px) {
+    .constraint-grid {
+        grid-template-columns: 1fr
+    }
+
+    .constraint-grid .wide {
+        grid-column: auto
+    }
+
+    .decision-planner {
+        padding: 17px
+    }
+}
+
 @media(prefers-reduced-motion:reduce) {
     * {
         scroll-behavior: auto !important;

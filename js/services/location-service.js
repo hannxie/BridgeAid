@@ -19,6 +19,47 @@ export function haversineMiles(lat1, lon1, lat2, lon2) {
   return 2 * radius * Math.asin(Math.sqrt(value));
 }
 
+function compactUsLabel(choice) {
+  const properties = choice.properties || {};
+  const parts = [
+    properties.name,
+    properties.city || properties.district || properties.county,
+    properties.state,
+    properties.postcode,
+    'USA'
+  ].filter(Boolean);
+  return [...new Set(parts)].join(', ');
+}
+
+export async function suggestLocations(query, fetcher = fetch, limit = 5) {
+  const value = String(query || '').normalize('NFKC').trim().replace(/\s+/g, ' ');
+  if (value.length < 2) return [];
+  const safeLimit = Math.min(5, Math.max(1, Number(limit) || 5));
+  const url = `https://photon.komoot.io/api/?limit=${safeLimit}&lang=en&bbox=-179.2,18.9,-66.4,71.6&q=${encodeURIComponent(value)}`;
+  const response = await fetcher(url, {
+    headers: { Accept: 'application/json' },
+    signal: timeoutSignal(4500)
+  });
+  if (!response.ok) {
+    const error = new Error('Location suggestions are temporarily unavailable.');
+    error.code = 'LOCATION_LOOKUP_FAILED';
+    throw error;
+  }
+  const features = (await response.json())?.features || [];
+  return features
+    .filter(feature => String(feature.properties?.countrycode || '').toUpperCase() === 'US')
+    .map(feature => ({
+      label: compactUsLabel(feature),
+      lat: Number(feature.geometry?.coordinates?.[1]),
+      lng: Number(feature.geometry?.coordinates?.[0]),
+      type: feature.properties?.type || ''
+    }))
+    .filter(choice => choice.label && Number.isFinite(choice.lat) && Number.isFinite(choice.lng))
+    .filter((choice, index, all) => all.findIndex(candidate =>
+      `${candidate.lat.toFixed(4)},${candidate.lng.toFixed(4)}` === `${choice.lat.toFixed(4)},${choice.lng.toFixed(4)}`) === index)
+    .slice(0, safeLimit);
+}
+
 export async function geocodeLocation(query, fetcher = fetch) {
   const value = String(query || '').normalize('NFKC').trim().replace(/\s+/g, ' ');
   if (!value) throw new Error('Enter a city, ZIP code, county, neighborhood, address, or landmark.');
@@ -30,7 +71,7 @@ export async function geocodeLocation(query, fetcher = fetch) {
     const direct = { lat: Number(coordinateMatch[1]), lng: Number(coordinateMatch[2]), label: value };
     if (direct.lat >= 18 && direct.lat <= 72 && direct.lng >= -180 && direct.lng <= -60) return direct;
   }
-  const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&countrycodes=us&limit=3&addressdetails=1&q=${encodeURIComponent(value)}`;
+  const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&countrycodes=us&limit=5&addressdetails=1&q=${encodeURIComponent(value)}`;
   const response = await fetcher(url, {
     headers: { Accept: 'application/json' },
     signal: timeoutSignal(5000)
@@ -51,7 +92,7 @@ export async function geocodeLocation(query, fetcher = fetch) {
     error.code = 'LOCATION_NOT_FOUND';
     throw error;
   }
-  const suggestions = choices.slice(0, 3).map(choice => ({
+  const suggestions = choices.slice(0, 5).map(choice => ({
     label: choice.display_name,
     lat: Number(choice.lat),
     lng: Number(choice.lon)
@@ -129,6 +170,7 @@ export function normalizeOsmElement(element, origin) {
     verificationStatus: 'Community-sourced — confirm with organization',
     confidence: tags.website && tags.phone ? 0.7 : 0.45,
     dateDiscovered: new Date().toISOString(),
+    discoveryStatus: 'verification_pending',
     verificationPeriodDays: 1
   };
 }

@@ -40,8 +40,9 @@ The implementation kept the no-build static architecture and existing resource r
 7. **Eligibility** — added relevant-question selection, deterministic rule evaluation, household-size income tables, explainable results, and transient answers.
 8. **Registration** — added HTTPS/official-domain validation, safe instructions, calling scripts, and explicit confirmation/authorization gates.
 9. **Administration foundation** — added a database migration, authorization guard, audited admin action model, and retryable background-job model without exposing a public dashboard.
-10. **Hardening** — added 66 deterministic tests, HTML escaping, safe links, phone sanitization, local-storage failure handling, offline states, and responsive browser checks.
+10. **Hardening** — added deterministic tests, HTML escaping, safe links, phone sanitization, local-storage failure handling, offline states, and responsive browser checks.
 11. **Local action paths** — added verified Seattle-area programs with structured local eligibility, full addresses, required documents, exceptions, deadlines, application steps, and direct official actions.
+12. **Nationwide search and decision intelligence** — added five-result U.S. autocomplete, normalized search signatures, uncapped paginated results, stale-saved-result blocking, coverage-gap discovery jobs, nationwide/local-provider separation, Education and Scholarships, and constraint-aware action plans.
 
 ## User modes
 
@@ -53,13 +54,13 @@ The choice is stored under `bridgeaid-mode` and validated as either `self` or `h
 
 ### Self mode
 
-Self mode uses the heading “What do you need right now?” and a translated need dropdown covering all services, food, housing, healthcare, mental health, transportation, clothing and hygiene, employment, education, childcare and family support, legal assistance, financial assistance and benefits, disability services, veteran services, immigration assistance, internet and technology, and an “Other” field. “All Services” is the default. The home page does not preload resources; results appear only after a need and location are submitted.
+Self mode uses the heading “What do you need right now?” and a translated, required need dropdown covering food, housing, healthcare, mental health, transportation, clothing and hygiene, employment, education and scholarships, childcare and family support, legal assistance, financial assistance and benefits, disability services, veteran services, immigration assistance, internet and technology, and an “Other” field. Location is also required. A separate situation field lets details such as “tonight,” “no identification,” or wheelchair access affect filters and ranking. The home page does not preload resources.
 
 Resource actions prioritize call, walking directions, and official sources. Users can switch to transit or driving directions. Empty facts are omitted, typical hours are labeled, and an uncertain schedule appears only after available sources have been checked.
 
 ### Helper mode
 
-Helper mode uses the heading “Help someone find support.” It includes an optional intake that does not request a name or highly sensitive identifiers. Immediate need and location become required only when a resource search is submitted.
+Helper mode uses the heading “Help someone find support.” Service category, immediate need, and location are visibly required. Other constraints remain optional, and the intake does not request a name or highly sensitive identifiers. Location autocomplete is shared with self mode.
 
 The helper plan supports:
 
@@ -110,12 +111,12 @@ The existing national records remain in `data/resources.js`.
 ### Cache-first search
 
 1. Build a key from the general location, category, and radius.
-2. Render a saved result immediately when available.
+2. Render a saved result only when every displayed record remains inside its verification period.
 3. If online, geocode the location and query OpenStreetMap.
 4. Normalize and merge duplicate results without losing source URLs.
 5. Rank by relevance, distance, availability, and source completeness.
 6. Save the refreshed result in `bridgeaid-resource-cache`.
-7. Keep the saved result if geocoding or live discovery fails.
+7. If current information cannot be verified, hide expired records and show a retry path instead of silently substituting stale data.
 
 OpenStreetMap data is community-maintained and explicitly labeled for confirmation.
 
@@ -248,7 +249,7 @@ or:
 node --test
 ```
 
-The deterministic suite contains 66 checks covering:
+The deterministic suite contains 92 checks covering:
 
 - Mode validation, persistence, switching, and location preservation
 - Storage corruption and blocked-storage behavior
@@ -275,11 +276,11 @@ The deterministic suite contains 66 checks covering:
 1. Clear this site’s local browser data and reload. Confirm the mode selector appears.
 2. Choose “I need help,” reload, and confirm the choice persists.
 3. Enter a general location, switch to helper mode, switch back, and confirm the location remains.
-4. Confirm the home page shows no preloaded resources, “All Services” is selected by default, and the selector follows the documented service order.
+4. Confirm the home page shows no preloaded resources, immediate need and location are required, and the selector follows the documented service order.
 5. Switch to helper mode and complete only immediate need and location.
 6. Choose “Not safe tonight” and confirm the general safety notice appears without hiding resources.
 7. Add a resource to the plan, compare resources, update status, add a note, copy, print, remove, and clear.
-8. Search 98101 with “All Services,” then open the Seattle Utility Discount Program eligibility and registration workflows. Confirm the exact local rules, documents, deadline, official actions, source, and verified date are shown.
+8. Search 98101 with Financial Assistance and Benefits, then open the Seattle Utility Discount Program eligibility and registration workflows. Confirm the exact local rules, documents, deadline, official actions, and verified date are shown.
 9. Disable the network and repeat a previously cached search. Confirm only still-current verified records remain and expired records are not shown.
 10. Test keyboard-only navigation, visible focus, 200% browser zoom, and a screen reader.
 11. Test widths of 320 px, 768 px, and desktop.

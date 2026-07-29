@@ -20,7 +20,9 @@ import {
   sortResources,
   resourceIsFresh,
   freshResources,
-  coordinateCacheKey
+  coordinateCacheKey,
+  normalizeSearchParameters,
+  searchSignature
 } from '../js/services/resource-service.js';
 import {
   nextRecurringEvent,
@@ -46,7 +48,8 @@ import {
   normalizeOsmElement,
   fetchNearbyResources,
   geocodeResourceAddresses,
-  clearLocationCaches
+  clearLocationCaches,
+  suggestLocations
 } from '../js/services/location-service.js';
 import {
   escapeHtml,
@@ -65,6 +68,7 @@ import { requireAdmin, applyAdminAction, AuthorizationError } from '../server/se
 import {
   createJob,
   createVerificationJobs,
+  createDiscoveryJobs,
   recordJobFailure
 } from '../server/services/background-job-service.js';
 import {
@@ -109,6 +113,7 @@ import {
 } from '../js/services/performance-service.js';
 import { registrationGuidance } from '../js/services/registration-service.js';
 import { categories, resources, nationwideResources } from '../data/resources.js';
+import { buildDecisionPlan, normalizePlanConstraints } from '../js/services/decision-plan-service.js';
 
 class MemoryStorage {
   constructor() {
@@ -175,7 +180,7 @@ test('service taxonomy uses the requested complete order with All Services first
     'Transportation',
     'Clothing and Hygiene',
     'Employment',
-    'Education',
+    'Education and Scholarships',
     'Childcare and Family Support',
     'Legal Assistance',
     'Financial Assistance and Benefits',
@@ -516,8 +521,8 @@ test('eligibility questions include only missing relevant fields', () => {
   assert.deepEqual(questionsForRules(rules, { age: 30 }).map(item => item.field), ['county']);
 });
 
-test('eligibility returns unable to determine without official rules', () => {
-  assert.equal(evaluateEligibility([], {}).status, 'Unable to determine');
+test('eligibility returns the required temporary-unavailable state without official rules', () => {
+  assert.equal(evaluateEligibility([], {}).status, 'Eligibility information temporarily unavailable');
 });
 
 test('missing eligibility answers return possibly eligible', () => {
@@ -585,6 +590,48 @@ test('ambiguous geocoding asks for clarification', async () => {
     { lat: '2', lon: '2', display_name: 'Springfield B', importance: .49 }
   ] });
   await assert.rejects(() => geocodeLocation('Springfield', ambiguous), error => error.code === 'AMBIGUOUS_LOCATION');
+});
+
+test('location autocomplete returns at most five deduplicated U.S. suggestions', async () => {
+  const fetcher = async () => ({
+    ok: true,
+    json: async () => ({
+      features: [
+        { properties: { name: 'Chicago', state: 'Illinois', countrycode: 'US' }, geometry: { coordinates: [-87.6298, 41.8781] } },
+        { properties: { name: 'Chicago', state: 'Illinois', countrycode: 'US' }, geometry: { coordinates: [-87.6298, 41.8781] } },
+        { properties: { name: 'Chicago Heights', state: 'Illinois', countrycode: 'US' }, geometry: { coordinates: [-87.6359, 41.5061] } },
+        { properties: { name: 'Chicago', state: 'Outside US', countrycode: 'CA' }, geometry: { coordinates: [-80, 44] } }
+      ]
+    })
+  });
+  const suggestions = await suggestLocations('Chcago', fetcher);
+  assert.equal(suggestions.length, 2);
+  assert.match(suggestions[0].label, /Chicago, Illinois, USA/);
+  assert.ok(suggestions.every(suggestion => Number.isFinite(suggestion.lat) && Number.isFinite(suggestion.lng)));
+});
+
+test('normalized search signatures are stable and include situation, filters, and sorting', () => {
+  const first = searchSignature({
+    location: ' Chicago,  IL ',
+    radius: 10,
+    category: 'food',
+    categories: ['family', 'food'],
+    situation: 'No ID',
+    filters: { accessible: false, noId: true },
+    sort: 'nearest'
+  });
+  const second = searchSignature({
+    location: 'chicago,il',
+    radius: 10,
+    category: 'FOOD',
+    categories: ['food', 'family', 'food'],
+    situation: ' no id ',
+    filters: { noId: true },
+    sort: 'NEAREST'
+  });
+  assert.equal(first, second);
+  assert.deepEqual(normalizeSearchParameters({ filters: { noId: true, openNow: false } }).filters, { noId: true });
+  assert.notEqual(first, searchSignature({ location: 'Chicago, IL', radius: 10, category: 'food', situation: 'has ID' }));
 });
 
 test('radius is represented in the Overpass query', () => {
@@ -763,6 +810,60 @@ test('background verification queues stale and incomplete food records first', (
   assert.deepEqual(jobs.map(job => job.payload.resourceId), ['food', 'general']);
   assert.equal(jobs[0].priority, 'high');
   assert.deepEqual(jobs[0].payload.checks, ['hours', 'eligibility', 'temporary-closure', 'special-events']);
+});
+
+test('coverage gaps create deterministic nationwide discovery jobs', () => {
+  const jobs = createDiscoveryJobs({
+    byLocation: {
+      Chicago: { food: 1, legal: 3 }
+    }
+  }, [
+    { location: 'Chicago', category: 'legal' },
+    { location: 'Chicago', category: 'food' },
+    { location: 'Boise', category: 'education', radiusMiles: 15 }
+  ], new Date('2026-07-28T12:00:00Z'));
+  assert.deepEqual(jobs.map(job => `${job.payload.location}:${job.payload.category}`), [
+    'Boise:education',
+    'Chicago:food'
+  ]);
+  assert.equal(jobs[0].priority, 'high');
+  assert.ok(jobs.every(job => job.type === 'discovery'));
+});
+
+test('decision planning respects distance, budget, accessibility, and reusable documents', () => {
+  const base = {
+    category: 'food',
+    services: ['food'],
+    lastVerified: '2026-07-28',
+    verificationPeriodDays: 90,
+    applicationMethods: ['inPerson'],
+    requiredDocuments: ['Proof of address'],
+    weeklyHours: {
+      monday: [{ open: '00:00', close: '24:00' }],
+      tuesday: [{ open: '00:00', close: '24:00' }],
+      wednesday: [{ open: '00:00', close: '24:00' }],
+      thursday: [{ open: '00:00', close: '24:00' }],
+      friday: [{ open: '00:00', close: '24:00' }],
+      saturday: [{ open: '00:00', close: '24:00' }],
+      sunday: [{ open: '00:00', close: '24:00' }]
+    }
+  };
+  const plan = buildDecisionPlan([
+    { ...base, id: 'near', name: 'Near Pantry', distance: 1, accessibility: ['Wheelchair accessible'] },
+    { ...base, id: 'far', name: 'Far Pantry', distance: 12, accessibility: ['Wheelchair accessible'] },
+    { ...base, id: 'unknown-access', name: 'Unknown Access', distance: 2, accessibility: [] }
+  ], {
+    transportation: 'walking',
+    maxDistance: 5,
+    walkingLimit: 3,
+    transportationBudget: 0,
+    wheelchairAccessible: true
+  }, { now: new Date('2026-07-28T12:00:00Z') });
+  assert.ok(plan.steps.some(step => step.type === 'documents'));
+  assert.ok(plan.steps.some(step => step.resourceId === 'near'));
+  assert.deepEqual(plan.excluded.map(item => item.resourceId).sort(), ['far', 'unknown-access']);
+  assert.match(plan.explanation, /No step guarantees/);
+  assert.equal(normalizePlanConstraints({ maxDistance: -1 }).maxDistance, 10);
 });
 
 test('critical UI copy and privacy constraints are present', async () => {
@@ -1086,7 +1187,7 @@ test('verified Seattle resources publish seven-day hours or an explicit not-list
 test('eligibility fallback uses the exact required disclosure in the interface', async () => {
   assert.equal(
     LOCALES.en.noEligibilityRequirementsExplanation,
-    'This provider does not publicly list specific eligibility restrictions. Contact the provider to confirm availability.'
+    'No eligibility requirements published. This provider does not publicly list specific restrictions, so contact the provider to confirm.'
   );
   const appSource = await readFile(new URL('../js/app.js', import.meta.url), 'utf8');
   assert.match(appSource, /noEligibilityRequirementsListed/);
@@ -1094,12 +1195,15 @@ test('eligibility fallback uses the exact required disclosure in the interface',
 });
 
 test('nationwide online resources are separated from local results and carry actionable details', () => {
-  assert.ok(nationwideResources.length >= 10);
+  assert.ok(nationwideResources.length >= 5);
   assert.ok(nationwideResources.every(resource => resource.scope === 'nationwide-online'));
+  assert.ok(nationwideResources.every(resource => !resource.requiresLocalProvider));
   assert.ok(nationwideResources.every(resource => resource.applicationSteps?.length >= 3));
   assert.ok(nationwideResources.every(resource => resource.applicationMethods?.length));
   assert.ok(nationwideResources.every(resource => resource.lastVerified));
   assert.ok(resources.filter(resource => resource.scope === 'location').every(resource => !resource.onlineOnly));
+  assert.ok(resources.some(resource => resource.scope === 'provider-directory'));
+  assert.ok(nationwideResources.some(resource => resource.category === 'education'));
 });
 
 test('verified food programs include distribution schedules and short re-verification periods', () => {
@@ -1123,7 +1227,7 @@ test('search UI exposes one Call 211 action and does not warn when stored fallba
   assert.match(appSource, /void searchNearby\(\)/);
 });
 
-test('removed support numbers and confidence scores are absent from the interface source', async () => {
+test('removed support numbers stay absent and completion estimates are explicitly non-guaranteed', async () => {
   const paths = [
     '../js/app.js',
     '../js/localization.js',
@@ -1132,7 +1236,9 @@ test('removed support numbers and confidence scores are absent from the interfac
   ];
   const combined = (await Promise.all(paths.map(path => readFile(new URL(path, import.meta.url), 'utf8')))).join('\n');
   assert.doesNotMatch(combined, /9(?:11|88)/);
-  assert.doesNotMatch(await readFile(new URL('../js/app.js', import.meta.url), 'utf8'), /confidence/i);
+  const appSource = await readFile(new URL('../js/app.js', import.meta.url), 'utf8');
+  assert.match(appSource, /completionConfidence/);
+  assert.match(appSource, /planNoGuarantee/);
 });
 
 test('home page implementation does not render preloaded resource cards', async () => {
@@ -1141,4 +1247,25 @@ test('home page implementation does not render preloaded resource cards', async 
   assert.doesNotMatch(homeFunction, /resourceCard\(/);
   assert.match(homeFunction, /noHomeResources/);
   assert.match(appSource, /<select id="needSelect"/);
+});
+
+test('search UI requires both intake fields, paginates without a 50-record cap, and hides stale saved cards', async () => {
+  const appSource = await readFile(new URL('../js/app.js', import.meta.url), 'utf8');
+  assert.match(appSource, /name="location"[^>]+required/);
+  assert.match(appSource, /name="need"[^>]+required/);
+  assert.match(appSource, /helperField\('immediateNeed'.*true\)/);
+  assert.match(appSource, /id="helperLocationInput"[^>]*required/);
+  assert.match(appSource, /data-load-more/);
+  assert.doesNotMatch(appSource, /\.slice\(0,\s*50\)/);
+  const savedFunction = appSource.slice(appSource.indexOf('function savedPage()'), appSource.indexOf('function privacyPage()'));
+  assert.match(savedFunction, /resourceIsFresh/);
+  assert.match(savedFunction, /savedNeedsVerification/);
+});
+
+test('resource cards expose category text and Last verified without visible source lists', async () => {
+  const appSource = await readFile(new URL('../js/app.js', import.meta.url), 'utf8');
+  const cardFunction = appSource.slice(appSource.indexOf('function resourceCard('), appSource.indexOf('function comparisonPanel('));
+  assert.match(cardFunction, /categoryLabel\(resource\.category\)/);
+  assert.match(cardFunction, /tr\('lastVerified'\)/);
+  assert.doesNotMatch(cardFunction, /sourceUrls|sourceBlock|sourceNumber/);
 });

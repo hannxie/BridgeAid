@@ -7,7 +7,7 @@ export const categories = [
   { id: 'transport', icon: '🚌', label: { en: 'Transportation', zh: '交通援助', es: 'Transporte' }, query: 'transportation assistance social services' },
   { id: 'hygiene', icon: '◌', label: { en: 'Clothing and Hygiene', zh: '衣物与卫生', es: 'Ropa e higiene' }, query: 'clothing shower laundry hygiene services' },
   { id: 'jobs', icon: '💼', label: { en: 'Employment', zh: '就业支持', es: 'Empleo' }, query: 'American Job Center workforce help' },
-  { id: 'education', icon: '▤', label: { en: 'Education', zh: '教育支持', es: 'Educación' }, query: 'education classes tutoring assistance' },
+  { id: 'education', icon: '▤', label: { en: 'Education and Scholarships', zh: '教育与奖学金', es: 'Educación y becas' }, query: 'education classes scholarships financial aid tutoring assistance' },
   { id: 'family', icon: '👪', label: { en: 'Childcare and Family Support', zh: '家庭与托儿支持', es: 'Cuidado infantil y apoyo familiar' }, query: 'family resource center childcare assistance' },
   { id: 'legal', icon: '⚖', label: { en: 'Legal Assistance', zh: '法律援助', es: 'Asistencia legal' }, query: 'free legal aid nonprofit' },
   { id: 'benefits', icon: '✓', label: { en: 'Financial Assistance and Benefits', zh: '福利与经济援助', es: 'Asistencia financiera y beneficios' }, query: 'public benefits financial utility assistance' },
@@ -57,6 +57,60 @@ const resourceRecords = [
   { id: 'community-action', category: 'family', name: 'Community Action Agency Locator', description: { en: 'Local organizations offering utility help, housing stability, weatherization, Head Start, and family support.', zh: '提供水电、住房稳定、节能改造、启蒙教育和家庭支持的本地机构。', es: 'Agencias locales para servicios, vivienda, climatización, Head Start y familias.' }, url: 'https://communityactionpartnership.com/find-a-cap/', source: 'Community Action Partnership', verified: '2026-07-27', hours: H.business, services: ['family', 'benefits', 'shelter', 'jobs', 'transport'], eligibility: E.varies, access: { en: 'Use the locator and contact the agency serving your county.', zh: '使用查询器并联系服务所在县的机构。', es: 'Use el buscador y contacte la agencia de su condado.' }, keywords: ['utility', 'rent', 'childcare', 'head start', 'weatherization'] },
   { id: 'salvation-army', category: 'all', name: 'The Salvation Army Service Locator', description: { en: 'Local centers may provide meals, shelter, rent or utility help, disaster aid, and family services.', zh: '本地中心可能提供餐食、住所、房租水电、灾害和家庭援助。', es: 'Centros locales pueden ofrecer comidas, refugio, renta, servicios y ayuda familiar.' }, url: 'https://www.salvationarmyusa.org/usn/plugins/gdosCenterSearch?start=1', source: 'The Salvation Army', verified: '2026-07-27', hours: H.call, services: ['food', 'shelter', 'benefits', 'family'], eligibility: E.varies, access: { en: 'Search by ZIP code and call the local center before visiting.', zh: '按邮编搜索并在前往前致电当地中心。', es: 'Busque por código postal y llame antes de ir.' }, keywords: ['clothing', 'disaster', 'rent', 'utility'] },
   { id: 'catholic-charities', category: 'all', name: 'Catholic Charities Agency Locator', description: { en: 'Local agencies may offer food, housing, immigration legal services, disaster support, and case management.', zh: '本地机构可能提供食品、住房、移民法律、灾害援助和个案管理。', es: 'Agencias locales pueden ofrecer alimentos, vivienda, inmigración, desastres y gestión de casos.' }, url: 'https://www.catholiccharitiesusa.org/find-help/', source: 'Catholic Charities USA', verified: '2026-07-27', hours: H.call, services: ['food', 'shelter', 'legal', 'family', 'benefits'], eligibility: E.varies, access: { en: 'Find the nearest agency and contact it for current programs.', zh: '查找最近机构并联系确认当前项目。', es: 'Encuentre la agencia más cercana y confirme programas.' }, keywords: ['immigration', 'refugee', 'case management', 'rent'] },
+  {
+    id: 'federal-student-aid-fafsa',
+    category: 'education',
+    services: ['education', 'benefits'],
+    organizationName: 'Federal Student Aid',
+    programName: 'Free Application for Federal Student Aid (FAFSA)',
+    name: 'FAFSA - Federal Student Aid',
+    description: L('A free nationwide online application used to determine eligibility for federal grants, work-study, loans, and some state, school, and scholarship aid.'),
+    url: 'https://studentaid.gov/h/apply-for-aid/fafsa',
+    registrationUrl: 'https://studentaid.gov/h/apply-for-aid/fafsa',
+    officialDomains: ['studentaid.gov'],
+    hours: H.online,
+    onlineAlwaysAvailable: true,
+    eligibilitySummary: L('Federal student-aid eligibility depends on enrollment plans, citizenship or eligible noncitizen status, financial information, and other published federal rules. Schools make final aid offers.'),
+    eligibilityStatus: 'varies',
+    eligibilityDetails: {
+      whoQualifies: L('Students planning to attend an eligible college, career school, or trade school can submit the FAFSA to be considered for aid.'),
+      importantExceptions: L('Contributor, dependency, citizenship, and consent requirements vary by the student situation; use the official form and help center.')
+    },
+    eligibilitySourceUrl: 'https://studentaid.gov/articles/fafsa-student-steps/',
+    eligibilityLastVerified: VERIFIED,
+    requiredDocuments: [
+      L('A StudentAid.gov account for the student and each required contributor'),
+      L('Contributor information'),
+      L('Federal tax information'),
+      L('Records of child support received and assets when the form asks for them'),
+      L('A list of schools the student is considering')
+    ],
+    access: L('Create or use a StudentAid.gov account, gather the published information, and complete the official FAFSA online.'),
+    applicationMethods: ['online'],
+    applicationLinks: [
+      { type: 'application', url: 'https://studentaid.gov/h/apply-for-aid/fafsa', label: L('Start or continue the FAFSA') },
+      { type: 'documents', url: 'https://studentaid.gov/articles/things-you-need-for-fafsa/', label: L('Review the official FAFSA checklist') }
+    ],
+    applicationSteps: [
+      L('Create a StudentAid.gov account for the student and each required contributor.'),
+      L('Gather the official FAFSA checklist items.'),
+      L('Complete and sign each required section of the official online form.'),
+      L('Review the FAFSA Submission Summary and respond to any school requests.')
+    ],
+    applicationDeadline: L('Federal, state, and school deadlines differ; check the official deadline page and each school before submitting.'),
+    afterApplying: L('Review the FAFSA Submission Summary, correct errors if needed, and follow up with each school financial-aid office.'),
+    applicationSourceUrl: 'https://studentaid.gov/articles/fafsa-student-steps/',
+    applicationLastVerified: VERIFIED,
+    source: 'U.S. Department of Education, Federal Student Aid',
+    sourceUrls: [
+      'https://studentaid.gov/articles/fafsa-student-steps/',
+      'https://studentaid.gov/articles/things-you-need-for-fafsa/',
+      'https://studentaid.gov/articles/3-fafsa-deadlines/'
+    ],
+    verified: VERIFIED,
+    verificationPeriodDays: 90,
+    keywords: ['education', 'college', 'career school', 'trade school', 'grant', 'scholarship', 'financial aid', 'FAFSA']
+  },
   {
     id: 'seattle-udp',
     category: 'benefits',
@@ -1026,12 +1080,12 @@ const resourceRecords = [
 const NATIONWIDE_IDS = new Set([
   '211', 'findhelp', 'hud', 'feeding-america', 'usda-hunger', 'hrsa', 'samhsa',
   'lawhelp', 'benefit-finder', 'snap', 'job-centers', 'community-action',
-  'salvation-army', 'catholic-charities'
+  'salvation-army', 'catholic-charities', 'federal-student-aid-fafsa'
 ]);
 
 const OPEN_NATIONWIDE = new Set(['211', 'usda-hunger', 'samhsa', 'job-centers']);
 const LOCAL_PROVIDER_REQUIRED = new Set([
-  'hud', 'feeding-america', 'hrsa', 'lawhelp', 'snap', 'job-centers',
+  'findhelp', 'hud', 'feeding-america', 'hrsa', 'lawhelp', 'snap', 'job-centers',
   'community-action', 'salvation-army', 'catholic-charities'
 ]);
 
@@ -1049,23 +1103,23 @@ export const resources = resourceRecords.map(resource => {
   ];
   return {
     ...resource,
-    scope: 'nationwide-online',
+    scope: requiresLocalProvider ? 'provider-directory' : 'nationwide-online',
     onlineOnly,
     requiresLocalProvider,
     serviceOffered: resource.description,
     whoItHelps: resource.eligibility,
     eligibilitySummary: resource.eligibility,
     eligibilityStatus,
-    applicationMethods,
-    requiredDocuments: requiresLocalProvider
+    applicationMethods: resource.applicationMethods || applicationMethods,
+    requiredDocuments: resource.requiredDocuments || (requiresLocalProvider
       ? [L('Document requirements are set by the program or local provider shown after you search.')]
-      : [L('No document is required to search or request information.')],
-    applicationLinks: resource.url
+      : [L('No document is required to search or request information.')]),
+    applicationLinks: resource.applicationLinks || (resource.url
       ? [{ type: requiresLocalProvider ? 'questionnaire' : 'application', url: resource.url, label: L(requiresLocalProvider ? 'Find the official local program' : 'Open the official resource') }]
-      : [],
-    applicationSteps: requiresLocalProvider
+      : []),
+    applicationSteps: resource.applicationSteps || (requiresLocalProvider
       ? [L('Open the official locator.'), L('Enter your state, ZIP code, or address.'), L('Choose a local provider and review its current eligibility, documents, and hours before applying.')]
-      : [L('Open the official resource or call the published number.'), L('Provide only the information needed to receive referrals or use the screening tool.'), L('Follow the official next-step links for any program you choose.')],
+      : [L('Open the official resource or call the published number.'), L('Provide only the information needed to receive referrals or use the screening tool.'), L('Follow the official next-step links for any program you choose.')]),
     applicationLastVerified: VERIFIED,
     eligibilityLastVerified: VERIFIED,
     lastVerified: VERIFIED,

@@ -53,6 +53,32 @@ export function createVerificationJobs(resources = [], now = new Date(), maximum
     }));
 }
 
+export function createDiscoveryJobs(coverage = {}, targets = [], now = new Date(), maximum = 100) {
+  const existing = coverage.byLocation || {};
+  const normalizedTargets = targets
+    .filter(target => target?.location && target?.category)
+    .map(target => ({
+      location: String(target.location).normalize('NFKC').trim(),
+      category: String(target.category).trim(),
+      radiusMiles: Math.min(25, Math.max(1, Number(target.radiusMiles) || 10))
+    }))
+    .filter(target => (existing[target.location]?.[target.category] || 0) < 3)
+    .sort((a, b) => (
+      (existing[a.location]?.[a.category] || 0) - (existing[b.location]?.[b.category] || 0)
+      || a.location.localeCompare(b.location)
+      || a.category.localeCompare(b.category)
+    ))
+    .slice(0, Math.max(0, Number(maximum) || 0));
+  return normalizedTargets.map((target, index) => ({
+    ...createJob('discovery', {
+      ...target,
+      sources: ['official-provider', 'government-directory', 'nonprofit-network', 'approved-place-api']
+    }, now),
+    id: `discovery-${target.location.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${target.category}-${now.getTime()}-${index}`,
+    priority: (existing[target.location]?.[target.category] || 0) === 0 ? 'high' : 'normal'
+  }));
+}
+
 export function recordJobFailure(job, error, now = new Date()) {
   const attempts = job.attempts + 1;
   const retryMinutes = Math.min(60, 2 ** attempts);
