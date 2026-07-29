@@ -140,6 +140,16 @@ import {
   NATIONWIDE_ELIGIBILITY_PROFILES,
   nationwideEligibilityReviewQueue
 } from '../data/nationwide-eligibility-research.js';
+import {
+  eligibilityForLocation,
+  locationContext,
+  matchesUserLocation
+} from '../js/services/location-eligibility-service.js';
+import {
+  isDisplayableResource,
+  isDisallowedPoliticalResult,
+  isGenericOrganizationName
+} from '../js/services/resource-quality-service.js';
 
 class MemoryStorage {
   constructor() {
@@ -784,19 +794,20 @@ test('conditional nationwide quiz asks only questions relevant to selected needs
 
 test('nationwide matcher uses cautious likely, possible, more-information, and unlikely labels', () => {
   const marketplace = resources.find(resource => resource.id === 'healthcare-marketplace-application');
-  const possible = evaluateNationwideProgram(marketplace, {
+  const locationIndependentMarketplace = { ...marketplace, stateVariation: false };
+  const possible = evaluateNationwideProgram(locationIndependentMarketplace, {
     usResident: 'yes',
     citizenshipStatus: 'citizen'
   });
   assert.equal(possible.label, 'Possible match');
-  const likely = evaluateNationwideProgram(marketplace, {
+  const likely = evaluateNationwideProgram(locationIndependentMarketplace, {
     usResident: 'yes',
     citizenshipStatus: 'citizen',
     incarcerated: 'no',
     medicareCoverage: 'no'
   });
   assert.equal(likely.label, 'Likely match');
-  const unlikely = evaluateNationwideProgram(marketplace, {
+  const unlikely = evaluateNationwideProgram(locationIndependentMarketplace, {
     usResident: 'yes',
     citizenshipStatus: 'citizen',
     incarcerated: 'yes',
@@ -810,6 +821,93 @@ test('nationwide matcher uses cautious likely, possible, more-information, and u
   assert.equal(directoryResult.label, 'More information needed');
   const matched = matchNationwidePrograms(resources, { needs: ['health'] });
   assert.ok(matched.some(result => result.resource.id === 'healthcare-marketplace-application'));
+});
+
+test('location-dependent eligibility selects the exact state profile and stays cautious without one', () => {
+  const program = {
+    id: 'state-benefit',
+    name: 'State Benefit Program',
+    category: 'benefits',
+    scope: 'nationwide-online',
+    stateVariation: true,
+    sourceUrls: ['https://benefits.example.gov'],
+    eligibilitySourceUrl: 'https://benefits.example.gov/rules',
+    eligibilityByState: {
+      WA: {
+        rules: [{ field: 'incomeRange', operator: 'lte', value: 50000, label: 'Washington income limit' }],
+        sourceUrl: 'https://benefits.example.gov/wa',
+        lastVerified: '2026-07-20'
+      },
+      OR: {
+        rules: [{ field: 'incomeRange', operator: 'lte', value: 40000, label: 'Oregon income limit' }],
+        sourceUrl: 'https://benefits.example.gov/or',
+        lastVerified: '2026-07-20'
+      }
+    }
+  };
+  assert.deepEqual(locationContext('Seattle, WA 98101'), {
+    label: 'Seattle, WA 98101',
+    city: 'Seattle',
+    county: '',
+    state: 'WA',
+    stateName: 'Washington',
+    zip: '98101',
+    lat: null,
+    lng: null
+  });
+  const washington = eligibilityForLocation(program, 'Seattle, WA 98101');
+  assert.equal(washington.confirmed, true);
+  assert.equal(washington.rules[0].value, 50000);
+  assert.equal(washington.sourceUrl, 'https://benefits.example.gov/wa');
+  const missing = evaluateNationwideProgram(program, { incomeRange: '0-25000' });
+  assert.equal(missing.code, 'more-info');
+  const evaluated = evaluateNationwideProgram(program, {
+    state: 'WA',
+    incomeRange: '0-25000'
+  });
+  assert.equal(evaluated.code, 'likely');
+  assert.equal(evaluated.locationConfirmed, true);
+});
+
+test('location matching distinguishes city, county, ZIP, state, and out-of-area records', () => {
+  const local = {
+    name: 'King County Service',
+    scope: 'location',
+    city: 'Seattle',
+    county: 'King County',
+    state: 'WA',
+    zip: '98101',
+    serviceAreas: ['King County'],
+    serviceAreaZipPrefixes: ['981']
+  };
+  assert.equal(matchesUserLocation(local, '98109').code, 'zip');
+  assert.equal(matchesUserLocation(local, 'King County, WA').serves, true);
+  assert.equal(matchesUserLocation(local, 'Seattle, WA').serves, true);
+  assert.equal(matchesUserLocation(local, 'Portland, OR').code, 'out-of-area');
+});
+
+test('resource quality blocks generic and political results but keeps legitimate benefit offices', () => {
+  assert.equal(isGenericOrganizationName('Community service organization'), true);
+  for (const name of [
+    'Senator Jane Doe Town Hall',
+    'Member of Congress District Office',
+    'State Legislature Press Release',
+    'Candidate Campaign Office',
+    'Representative Constituent News'
+  ]) {
+    assert.equal(isDisallowedPoliticalResult({ name }), true, name);
+  }
+  assert.equal(isDisallowedPoliticalResult({ name: 'County Human Services Benefits Office' }), false);
+  assert.equal(isDisplayableResource({
+    id: 'office',
+    name: 'County Human Services Benefits Office',
+    category: 'benefits',
+    address: '1 Main St',
+    sourceUrls: ['https://county.example.gov/benefits'],
+    confidence: 0.9,
+    scope: 'location',
+    resultType: 'local-service'
+  }), true);
 });
 
 test('ambiguous national rules are exposed in the manual eligibility review queue', () => {
@@ -1245,6 +1343,34 @@ test('active navigation renders an accessible non-color-only current-page state'
   assert.doesNotMatch(modeHandler, /setPageRoute\('home'\)/);
 });
 
+test('desktop and mobile navigation retain Home, Local, Nationwide, Eligibility, and Saved', async () => {
+  const [appSource, css] = await Promise.all([
+    readFile(new URL('../js/app.js', import.meta.url), 'utf8'),
+    readFile(new URL('../css/styles.css', import.meta.url), 'utf8')
+  ]);
+  const headerSource = appSource.slice(appSource.indexOf('function header()'), appSource.indexOf('function communityLink()'));
+  for (const route of ['home', 'find', 'nationwide', 'eligibility', 'saved']) {
+    assert.match(headerSource, new RegExp(`navButton\\('${route}'`));
+  }
+  assert.match(css, /\.nav-links\.open\s*\{\s*display:\s*grid/);
+  assert.match(css, /\.mobile-menu\s*\{[\s\S]*display:\s*block/);
+  assert.match(headerSource, /mode-chip/);
+});
+
+test('helper primary workflow is concise, advanced details collapse, and empty plans stay hidden', async () => {
+  const appSource = await readFile(new URL('../js/app.js', import.meta.url), 'utf8');
+  const intakeSource = appSource.slice(appSource.indexOf('function helperIntake()'), appSource.indexOf('function findPage()'));
+  for (const field of ['serviceCategories', 'location', 'safetyTonight', 'ageGroup', 'childrenInvolved', 'transportation', 'phoneAccess', 'preferredLanguage']) {
+    assert.match(intakeSource, new RegExp(field));
+  }
+  assert.match(intakeSource, /<details class="helper-more">/);
+  assert.match(intakeSource, /tr\('moreDetails'\)/);
+  assert.match(intakeSource, /data-helper-search/);
+  const planSource = appSource.slice(appSource.indexOf('function planPanel()'), appSource.indexOf('function planItem('));
+  assert.match(planSource, /if \(!state\.helperPlan\.length\) return ''/);
+  assert.doesNotMatch(planSource, /plan-actions|planStorageWarning|helperNeeds/);
+});
+
 test('critical UI copy and privacy constraints are present', async () => {
   const locale = await readFile(new URL('../js/localization.js', import.meta.url), 'utf8');
   assert.match(locale, /How are you using BridgeAid\?/);
@@ -1262,10 +1388,10 @@ test('nationwide quiz replaces the retired plan without persisting private answe
   ]);
   assert.match(locale, /nationwideTitle: 'Nationwide Help'/);
   assert.doesNotMatch(locale, /Nationwide Online Resources/);
-  assert.match(appSource, /Find Programs for Me/);
-  assert.match(appSource, /Clear my answers/);
+  assert.match(appSource, /tr\('quizTitle'\)/);
+  assert.match(appSource, /tr\('quizClear'\)/);
   assert.match(appSource, /conditionalEligibilityQuestions[\s\S]+?slice\(0, 8\)/);
-  assert.match(appSource, /Official eligibility source/);
+  assert.match(appSource, /tr\('officialEligibilitySource'\)/);
   assert.doesNotMatch(appSource, /persist\([^,\n]+,\s*state\.nationwideQuiz/);
   assert.doesNotMatch(worker, /decision-plan-service/);
   await assert.rejects(readFile(new URL('../js/services/decision-plan-service.js', import.meta.url), 'utf8'));
@@ -1319,6 +1445,7 @@ test('assistant understands multilingual categories, locations, and distinct int
   assert.equal(locationFromMessage('Find food near Seattle, WA'), 'Seattle, WA');
   assert.equal(assistantIntent('What time are you open?'), 'hours');
   assert.equal(assistantIntent('How do I apply?'), 'registration');
+  assert.equal(assistantIntent('Give me walking directions'), 'directions');
 });
 
 test('assistant language requests are not mistaken for locations', () => {
@@ -1429,6 +1556,64 @@ test('assistant asks specific follow-ups and does not repeat unrelated answers',
     translate
   });
   assert.notEqual(hours.text, registration.text);
+});
+
+test('assistant grounds multilingual save and call follow-ups in prior recommendations', () => {
+  const fixture = [
+    {
+      id: 'pantry-one',
+      name: 'First Neighborhood Pantry',
+      category: 'food',
+      services: ['food'],
+      address: '1 Main St, Seattle, WA 98101',
+      serviceAreas: ['Seattle'],
+      phone: '206-555-0101',
+      sourceUrls: ['https://one.example.org'],
+      confidence: 0.9,
+      distance: 1
+    },
+    {
+      id: 'pantry-two',
+      name: 'Second Neighborhood Pantry',
+      category: 'food',
+      services: ['food'],
+      address: '2 Main St, Seattle, WA 98101',
+      serviceAreas: ['Seattle'],
+      phone: '206-555-0102',
+      sourceUrls: ['https://two.example.org'],
+      confidence: 0.9,
+      distance: 2
+    }
+  ];
+  const first = answerGroundedAssistant({
+    message: 'Necesito comida',
+    selectedLanguage: 'es',
+    currentLocation: 'Seattle, WA',
+    resources: fixture,
+    translate
+  });
+  const save = answerGroundedAssistant({
+    message: 'Guarda la opción 2',
+    selectedLanguage: 'es',
+    currentLocation: 'Seattle, WA',
+    resources: fixture,
+    context: first.context,
+    selectedResource: fixture[0],
+    translate
+  });
+  assert.equal(save.action.type, 'save');
+  assert.equal(save.action.resourceId, first.recommendations[1].id);
+  const chineseSave = answerGroundedAssistant({
+    message: '收藏第二个',
+    selectedLanguage: 'zh',
+    currentLocation: 'Seattle, WA',
+    resources: fixture,
+    context: first.context,
+    translate
+  });
+  assert.equal(chineseSave.action.resourceId, first.recommendations[1].id);
+  assert.equal(assistantIntent('收藏第二个'), 'save');
+  assert.equal(assistantIntent('请致电第一个'), 'call');
 });
 
 test('local eligibility requires both a matching service area and official rules', () => {
@@ -1671,8 +1856,9 @@ test('only the verified 988 crisis number is present and nationwide matches are 
   assert.doesNotMatch(combined, /\b911\b/);
   assert.match(combined, /988 Suicide & Crisis Lifeline/);
   const appSource = await readFile(new URL('../js/app.js', import.meta.url), 'utf8');
-  assert.match(appSource, /This is a preliminary match\. The program makes the final eligibility decision\./);
-  assert.match(appSource, /Only the organization can confirm eligibility/);
+  const locale = await readFile(new URL('../js/localization.js', import.meta.url), 'utf8');
+  assert.match(locale, /This is a preliminary match\. The program makes the final eligibility decision\./);
+  assert.match(locale, /Only the organization can confirm eligibility/);
 });
 
 test('home page implementation does not render preloaded resource cards', async () => {
@@ -1681,11 +1867,11 @@ test('home page implementation does not render preloaded resource cards', async 
   assert.doesNotMatch(homeFunction, /resourceCard\(/);
   assert.doesNotMatch(homeFunction, /searchBox\(/);
   assert.doesNotMatch(homeFunction, /helperIntake\(/);
-  assert.match(homeFunction, /Search Local Help/);
+  assert.match(homeFunction, /tr\('homeLocalAction'\)/);
   assert.match(appSource, /<select id="needSelect"/);
 });
 
-test('search UI requires both intake fields, paginates without a 50-record cap, and hides stale saved cards', async () => {
+test('search UI requires both intake fields, paginates, and preserves saved snapshots', async () => {
   const appSource = await readFile(new URL('../js/app.js', import.meta.url), 'utf8');
   assert.match(appSource, /name="location"[^>]+required/);
   assert.match(appSource, /name="need"[^>]+required/);
@@ -1695,8 +1881,9 @@ test('search UI requires both intake fields, paginates without a 50-record cap, 
   assert.match(appSource, /data-load-more/);
   assert.doesNotMatch(appSource, /\.slice\(0,\s*50\)/);
   const savedFunction = appSource.slice(appSource.indexOf('function savedPage()'), appSource.indexOf('function privacyPage()'));
-  assert.match(savedFunction, /resourceIsFresh/);
-  assert.match(savedFunction, /savedNeedsVerification/);
+  assert.match(savedFunction, /state\.savedResources/);
+  assert.match(savedFunction, /state\.saved\.has/);
+  assert.doesNotMatch(savedFunction, /resourceIsFresh/);
 });
 
 test('resource cards expose category text and Last verified without visible source lists', async () => {

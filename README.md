@@ -47,6 +47,7 @@ The implementation kept the no-build static architecture and existing resource r
 14. **Program eligibility operations** — stores eligibility per organization and program, distinguishes pending/review/no-public-rules/technical-failure states, queues official-source research, and provides a CSV administrative export while keeping the application database authoritative.
 15. **Expanded national actions** — the nationwide catalog now includes more than twenty verified, actionable applications, assessments, claims, courses, searches, and counseling pathways across the requested categories.
 16. **Shared local search and short national screening** — self mode, helper mode, autocomplete refreshes, and GPS now use one validated Local Help workflow. Nationwide Help includes an optional, conditional, at-most-eight-question preliminary matcher across all 52 national entries, including 10 provider directories.
+17. **Location-aware results and durable saved resources** — restored direct Home, Local Help, Nationwide Help, Eligibility, and Saved navigation; added state/county/city/ZIP service-area matching; retained complete saved-resource snapshots; simplified helper cards and intake; completed EN/ES/ZH interface coverage; introduced the BridgeAid SVG mark; grounded BridgeAI save/call/directions follow-ups; and blocked generic or political search results.
 
 ## User modes
 
@@ -64,15 +65,14 @@ Resource actions prioritize call, walking directions, and official sources. User
 
 ### Helper mode
 
-Helper mode uses the heading “Help someone find support.” Service category, immediate need, and location are visibly required. Other constraints remain optional, and the intake does not request a name or highly sensitive identifiers. Location autocomplete is shared with self mode.
+Helper mode uses the heading “Help someone find support.” Need and city/ZIP are the main required inputs. Safety, age, children, transportation, phone access, and language stay visible; less common constraints are under “More details.” The intake does not request a name or highly sensitive identifiers. Location autocomplete is shared with self mode.
 
 The helper plan supports:
 
 - Selecting and removing resources
-- Comparing up to three resources
 - Status: Not contacted, Called, Confirmed, or Unavailable
 - A short local note
-- Phone, official link, directions, eligibility summary, registration information, and documents
+- Phone, directions, eligibility summary, and a collapsed details section
 - Plain-text copy
 - Printing with `window.print()`
 - Clearing the complete helper intake and plan
@@ -81,7 +81,7 @@ The safety-today response does not hide ordinary resources. BridgeAid keeps 211 
 
 ## BridgeAI architecture
 
-Users see one BridgeAI assistant. `js/services/grounded-assistant.js` detects the latest-message language, intent, category, and location; remembers conversation context; and recommends only stored or live sourced records:
+Users see one BridgeAI assistant. `js/services/grounded-assistant.js` detects the latest-message language, intent, category, and location; remembers the last three grounded recommendations; supports resource, hours, eligibility, application, location, save, and call follow-ups; and recommends only quality-checked sourced records that serve the selected location:
 
 ```text
 BridgeAI
@@ -92,7 +92,7 @@ BridgeAI
 └── Internet Discovery foundation
 ```
 
-The current browser implementation is deterministic and source-bound; it does not call a generative AI API. It only reuses cached or curated records while they remain inside their approved verification period. Expired records are hidden and queued for re-verification, and missing facts are never invented.
+The current browser implementation is deterministic and source-bound; it does not call a generative AI API. Search and chat use current curated or discovered records and never invent missing facts. Saved-resource snapshots remain visible until the user removes them, with their displayed verification date so the user can confirm time-sensitive details.
 
 Relevant files:
 
@@ -111,6 +111,12 @@ Relevant files:
 `normalizeResource()` keeps older records usable while supporting structured fields such as organization/program names, coordinates, schedules, local eligibility rules, documents, accessibility, languages, transportation, source URLs, verification status, and conflicts. Confidence scores are not displayed.
 
 The existing national records remain in `data/resources.js`.
+
+### Location-dependent eligibility
+
+`js/services/location-eligibility-service.js` turns a city, county, state, ZIP code, geocoder result, or session-only GPS reverse-geocode into one shared location context. Local results must match a published city/county/ZIP/state service area (or originate from the active nearby discovery result). Nationwide programs marked `stateVariation` use `eligibilityByState` profiles when an exact state profile and official source are available; otherwise BridgeAid reports that location-specific rules still need confirmation. The source fields that establish this are `eligibilitySourceUrl`, per-state `sourceUrl`, `lastEligibilityVerified`, `serviceAreas`, `serviceAreaZipPrefixes`, and `serviceAreaZipRanges`.
+
+`js/services/resource-quality-service.js` rejects unnamed and generic organizations, elected-official/campaign/news results, records without traceable sources, records without a usable service area, and records without a numeric confidence value. Legitimate government benefit-administration offices remain allowed.
 
 ### Cache-first search
 
@@ -166,7 +172,8 @@ BridgeAid may store these values in the current browser profile:
 | `bridgeaid-helper-plan` | Selected resources, status, and notes | Clear this plan or Privacy page |
 | `bridgeaid-resource-cache-v12` | Faster repeated/offline searches | Privacy page |
 | `bridgeaid-saved-searches` | Recent general search locations | Privacy page |
-| `ba-saved` | Saved resource identifiers | Clear site data |
+| `ba-saved` | Saved resource identifiers | Saved page or clear site data |
+| `bridgeaid-saved-resource-snapshots` | Complete saved cards so they survive refresh and search changes | Saved page or clear site data |
 | `ba-lang` | Language preference | Clear site data |
 
 Not stored by default:
@@ -273,7 +280,8 @@ The deterministic suite contains more than 110 checks covering:
 - Helper plan creation, status, notes, removal, and clearing
 - Mode-aware orchestration
 - Shared self/helper/GPS local-search request handling
-- Complete eligibility metadata for all nationwide resources, conditional quiz questions, cautious matching labels, and the manual-review queue
+- Complete eligibility metadata for all nationwide resources, conditional quiz questions, cautious matching labels, state-specific profile selection, and the manual-review queue
+- City/county/state/ZIP location matching, generic-name rejection, political-result exclusion, durable saved snapshots, and multilingual assistant actions
 - Server-side admin authorization and audit history
 - Background-job retries
 - Required UI/privacy copy and responsive CSS
@@ -286,13 +294,15 @@ The deterministic suite contains more than 110 checks covering:
 4. Confirm the Home page is informational and has clear links to Local Help and Nationwide Help, with no search form or preloaded resources.
 5. Open Local Help in self mode and confirm need and location are required. Switch to helper mode and complete only location and one support type.
 6. Choose “Not safe tonight” and confirm the general safety notice appears without hiding resources.
-7. Add a resource to the plan, compare resources, update status, add a note, copy, print, remove, and clear.
+7. Add a resource to the helper plan, update status, add a note, copy, print, remove, and clear.
 8. Search 98101 with Financial Assistance and Benefits, then open the Seattle Utility Discount Program eligibility and registration workflows. Confirm the exact local rules, documents, deadline, official actions, and verified date are shown.
 9. Disable the network and repeat a previously cached search. Confirm only still-current verified records remain and expired records are not shown.
 10. Test keyboard-only navigation, visible focus, 200% browser zoom, and a screen reader.
 11. Test widths of 320 px, 768 px, and desktop.
 12. Open Nationwide Help, complete and skip quiz questions, confirm the four cautious match labels and official-source links, then clear or restart the quiz.
 13. Inspect the console during critical workflows and confirm there are no uncaught errors.
+14. Save a local and a nationwide result, reload, switch modes and pages, and confirm both cards remain until individually removed or “Clear all saved” is confirmed.
+15. Change the language to Spanish and Simplified Chinese and check Home, Local Help, helper intake/cards, Nationwide Help, Saved, quiz, eligibility explanations, and BridgeAI.
 
 Automated in-app browser verification was performed at 320 px, 768 px, and 1440 px. It confirmed no horizontal overflow, 44-pixel interactive targets, persistent mode switching, location preservation, helper-plan creation/status/note/clear workflows, and no console errors.
 

@@ -1,4 +1,4 @@
-import { normalizeResource } from './resource-service.js?v=13';
+import { normalizeResource } from './resource-service.js?v=16';
 
 function csvCell(value) {
   const text = Array.isArray(value)

@@ -109,8 +109,15 @@ summary:focus-visible {
     width: 40px;
     height: 40px;
     border-radius: 12px;
-    background: var(--orange);
-    color: #fff
+    background: transparent;
+    color: #fff;
+    object-fit: contain
+}
+
+.logo svg {
+    display: block;
+    width: 100%;
+    height: 100%
 }
 
 .nav-links {
@@ -375,6 +382,10 @@ summary:focus-visible {
     justify-content: space-between;
     align-items: center;
     gap: 10px
+}
+
+.card-top .verification-badge {
+    margin-left: auto
 }
 
 .tag,
@@ -676,6 +687,17 @@ footer small {
     .card-actions>* {
         width: 100%
     }
+}
+
+.result-type-badge {
+    border: 1px solid #c7d6e4;
+    border-radius: 999px;
+    background: #f5f8fb;
+    padding: 5px 9px;
+    color: var(--blue);
+    font-size: .75rem;
+    font-weight: 850;
+    white-space: nowrap
 }
 
 /* Simplified navigation, informational home, and nationwide screening */
@@ -2510,6 +2532,77 @@ textarea:focus-visible {
     font-weight: 800
 }
 
+.helper-more {
+    margin: 16px 0;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: #fbfcfd;
+    padding: 0 14px
+}
+
+.helper-more>summary {
+    cursor: pointer;
+    padding: 14px 0;
+    color: var(--teal);
+    font-weight: 850
+}
+
+.helper-more[open]>summary {
+    margin-bottom: 14px;
+    border-bottom: 1px solid var(--line)
+}
+
+.helper-more .intake-grid {
+    padding-bottom: 14px
+}
+
+.helper-resource-card {
+    gap: 9px
+}
+
+.helper-resource-card .card-top {
+    flex-wrap: wrap;
+    justify-content: flex-start
+}
+
+.helper-resource-card h3 {
+    font-size: 1.16rem
+}
+
+.helper-resource-card .program-name {
+    margin: -4px 0 2px;
+    color: var(--muted)
+}
+
+.helper-card-summary {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 7px 12px;
+    color: var(--muted);
+    font-size: .86rem
+}
+
+.helper-card-summary span {
+    position: relative;
+    display: -webkit-box;
+    overflow: hidden;
+    padding-left: 14px;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3
+}
+
+.helper-card-summary span::before {
+    content: "•";
+    position: absolute;
+    left: 0;
+    color: var(--teal);
+    font-weight: 900
+}
+
+.helper-card-details {
+    margin-top: 2px
+}
+
 .rank-explanation {
     padding: 12px 14px;
     border-left: 4px solid var(--teal);
@@ -2554,6 +2647,10 @@ textarea:focus-visible {
     }
 
     .helper-category-picker {
+        grid-template-columns: 1fr
+    }
+
+    .helper-card-summary {
         grid-template-columns: 1fr
     }
 }

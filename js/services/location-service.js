@@ -1,4 +1,5 @@
 import { parseOpeningHours } from './schedule-verification-service.js';
+import { isDisplayableResource, resourceQualityReview } from './resource-quality-service.js';
 
 const geocodeCache = new Map();
 const addressCoordinateCache = new Map();
@@ -52,7 +53,11 @@ export async function suggestLocations(query, fetcher = fetch, limit = 5) {
       label: compactUsLabel(feature),
       lat: Number(feature.geometry?.coordinates?.[1]),
       lng: Number(feature.geometry?.coordinates?.[0]),
-      type: feature.properties?.type || ''
+      type: feature.properties?.type || '',
+      city: feature.properties?.city || feature.properties?.district || '',
+      county: feature.properties?.county || '',
+      state: feature.properties?.state || '',
+      zip: feature.properties?.postcode || ''
     }))
     .filter(choice => choice.label && Number.isFinite(choice.lat) && Number.isFinite(choice.lng))
     .filter((choice, index, all) => all.findIndex(candidate =>
@@ -95,7 +100,12 @@ export async function geocodeLocation(query, fetcher = fetch) {
   const suggestions = choices.slice(0, 5).map(choice => ({
     label: choice.display_name,
     lat: Number(choice.lat),
-    lng: Number(choice.lon)
+    lng: Number(choice.lon),
+    city: choice.address?.city || choice.address?.town || choice.address?.village || choice.address?.municipality || '',
+    county: choice.address?.county || '',
+    state: choice.address?.state || '',
+    stateCode: String(choice.address?.['ISO3166-2-lvl4'] || '').split('-')[1] || '',
+    zip: choice.address?.postcode || ''
   }));
   const hasStateOrZip = /,\s*[a-z]{2}\b/i.test(value) || /\b\d{5}(?:-\d{4})?\b/.test(value);
   if (!hasStateOrZip && choices.length > 1 && choices[0].importance && choices[1].importance && Math.abs(choices[0].importance - choices[1].importance) < 0.02) {
@@ -110,6 +120,29 @@ export async function geocodeLocation(query, fetcher = fetch) {
     geocodeCache.set(result.label.toLowerCase(), result);
   }
   return result;
+}
+
+export async function reverseGeocodeLocation({ lat, lng }, fetcher = fetch) {
+  if (!Number.isFinite(Number(lat)) || !Number.isFinite(Number(lng))) {
+    throw new Error('Valid coordinates are required.');
+  }
+  const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&addressdetails=1&lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lng)}`;
+  const response = await fetcher(url, {
+    headers: { Accept: 'application/json' },
+    signal: timeoutSignal(5000)
+  });
+  if (!response.ok) throw new Error('Reverse location lookup failed.');
+  const choice = await response.json();
+  return {
+    label: choice.display_name || `${lat}, ${lng}`,
+    lat: Number(lat),
+    lng: Number(lng),
+    city: choice.address?.city || choice.address?.town || choice.address?.village || choice.address?.municipality || '',
+    county: choice.address?.county || '',
+    state: choice.address?.state || '',
+    stateCode: String(choice.address?.['ISO3166-2-lvl4'] || '').split('-')[1] || '',
+    zip: choice.address?.postcode || ''
+  };
 }
 
 export function buildOverpassQuery(lat, lng, radiusMiles = 5) {
@@ -148,11 +181,15 @@ export function normalizeOsmElement(element, origin) {
     .split(/[;,]/)
     .map(value => value.trim())
     .filter(Boolean);
-  return {
+  const specificName = tags.name || tags.operator || '';
+  const resource = {
     id: `osm-${element.type}-${element.id}`,
-    name: tags.name || tags.operator || 'Community service organization',
+    organizationName: specificName,
+    programName: '',
+    name: specificName,
     category: inferCategory(tags),
     scope: 'location',
+    resultType: 'local-service',
     services: [inferCategory(tags)],
     lat,
     lng,
@@ -181,6 +218,12 @@ export function normalizeOsmElement(element, origin) {
     discoveryStatus: 'verification_pending',
     verificationPeriodDays: 1
   };
+  const review = resourceQualityReview(resource);
+  return {
+    ...resource,
+    reviewRequired: review.reviewRequired,
+    qualityReviewReasons: review.reasons
+  };
 }
 
 export async function fetchNearbyResources({ lat, lng, radius = 5, fetcher = fetch }) {
@@ -195,7 +238,9 @@ export async function fetchNearbyResources({ lat, lng, radius = 5, fetcher = fet
       });
       if (!response.ok) throw new Error(`Resource search returned ${response.status}.`);
       const data = await response.json();
-      return (data.elements || []).map(element => normalizeOsmElement(element, { lat, lng }));
+      return (data.elements || [])
+        .map(element => normalizeOsmElement(element, { lat, lng }))
+        .filter(isDisplayableResource);
   });
   try {
     return await Promise.any(attempts);

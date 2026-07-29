@@ -2,8 +2,8 @@ import {
   categories as legacyCategories,
   keywordMap,
   resources as sourceResources
-} from '../data/resources.js?v=15';
-import { translate, detectMessageLanguage, requestedLanguage } from './localization.js?v=15';
+} from '../data/resources.js?v=16';
+import { translate, detectMessageLanguage, requestedLanguage } from './localization.js?v=16';
 import {
   safeStorageGet,
   safeStorageSet,
@@ -25,13 +25,14 @@ import {
   resourceIsFresh,
   freshResources,
   searchSignature
-} from './services/resource-service.js?v=13';
+} from './services/resource-service.js?v=16';
 import {
   geocodeLocation,
+  reverseGeocodeLocation,
   fetchNearbyResources,
   geocodeResourceAddresses,
   suggestLocations
-} from './services/location-service.js?v=13';
+} from './services/location-service.js?v=16';
 import {
   formatScheduleTime,
   resourceScheduleState,
@@ -52,13 +53,13 @@ import {
   localEligibilityQuestions,
   evaluateLocalEligibility,
   servesLocation
-} from './services/local-eligibility-service.js?v=13';
+} from './services/local-eligibility-service.js?v=16';
 import { registrationGuidance } from './services/registration-service.js';
 import {
   answerGroundedAssistant,
   assistantCategory,
   locationFromMessage
-} from './services/grounded-assistant.js?v=13';
+} from './services/grounded-assistant.js?v=16';
 import {
   createCorrectionReport,
   queueCorrection,
@@ -85,11 +86,17 @@ import {
 import {
   normalizeLocalSearchRequest,
   applyLocalSearchRequest
-} from './services/local-search-workflow.js?v=15';
+} from './services/local-search-workflow.js?v=16';
 import {
   conditionalEligibilityQuestions,
   matchNationwidePrograms
-} from './services/nationwide-eligibility-service.js?v=15';
+} from './services/nationwide-eligibility-service.js?v=16';
+import {
+  locationContext,
+  matchesUserLocation,
+  locationStatusKey
+} from './services/location-eligibility-service.js';
+import { isDisplayableResource } from './services/resource-quality-service.js';
 
 const STORAGE = {
   mode: 'bridgeaid-mode',
@@ -98,6 +105,7 @@ const STORAGE = {
   languageExplicit: 'bridgeaid-language-explicit',
   unit: 'bridgeaid-distance-unit',
   saved: 'ba-saved',
+  savedResources: 'bridgeaid-saved-resource-snapshots',
   helperIntake: 'bridgeaid-helper-intake',
   helperPlan: 'bridgeaid-helper-plan',
   cache: 'bridgeaid-resource-cache-v12',
@@ -157,6 +165,7 @@ const state = {
   situationConstraints: parseSituation(''),
   query: '',
   location: typeof initialLocation === 'string' ? initialLocation : '',
+  locationContext: locationContext(typeof initialLocation === 'string' ? initialLocation : ''),
   coordinates: null,
   radiusValue: 5,
   unit: ['mi', 'km'].includes(safeStorageGet(STORAGE.unit, defaultUnit)) ? safeStorageGet(STORAGE.unit, defaultUnit) : defaultUnit,
@@ -179,6 +188,7 @@ const state = {
     applicationMethod: 'all'
   },
   saved: new Set(safeArray(STORAGE.saved)),
+  savedResources: safeArray(STORAGE.savedResources),
   liveResults: [],
   storedResults: sourceResources,
   resolvedLocation: '',
@@ -260,6 +270,7 @@ function persistShared() {
   persist(STORAGE.languageExplicit, state.languageExplicit);
   persist(STORAGE.unit, state.unit);
   persist(STORAGE.saved, [...state.saved]);
+  persist(STORAGE.savedResources, state.savedResources);
 }
 
 function persistHelper() {
@@ -343,10 +354,15 @@ function recordSearchDiagnostic(event, details = {}) {
 }
 
 function mergeSearchResults(existing, incoming, desired = []) {
-  return rankResources(mergeDuplicates([
+  const displayable = mergeDuplicates([
     ...(existing || []),
     ...(incoming || [])
-  ]), { categories: desired, constraints: state.situationConstraints });
+  ]).filter(resource => isDisplayableResource(normalizeResource(resource)));
+  return rankResources(displayable, {
+    categories: desired,
+    constraints: state.situationConstraints,
+    location: state.locationContext
+  });
 }
 
 function applySituationFilters(text) {
@@ -376,7 +392,8 @@ function staticMatches() {
     .filter(resource => String(resource.id) !== '211')
     .filter(resource => (resource.scope || 'location') === 'location')
     .filter(resource => resourceIsFresh(resource))
-    .map(resource => normalizeResource(resource, state.lang));
+    .map(resource => normalizeResource(resource, state.lang))
+    .filter(isDisplayableResource);
   rows = rows.filter(resource => {
     const original = state.storedResults.find(item => String(item.id) === resource.id);
     const isLocationBound = Boolean(
@@ -391,7 +408,11 @@ function staticMatches() {
       || wanted.includes(resource.category)
       || resource.services.some(service => wanted.includes(service)));
   }
-  return rankResources(rows, { categories: wanted, constraints: state.situationConstraints });
+  return rankResources(rows, {
+    categories: wanted,
+    constraints: state.situationConstraints,
+    location: state.locationContext
+  });
 }
 
 function allResults() {
@@ -403,10 +424,13 @@ function allResults() {
         ...normalized,
         localEligibilityVerified: Boolean(localProgramForResource(normalized, state.location)?.localEligibilityVerified)
       };
-    });
+    })
+    .filter(isDisplayableResource)
+    .filter(resource => matchesUserLocation(resource, state.locationContext).serves !== false);
   const ranked = rankResources(combined, {
     categories: desiredCategories(),
-    constraints: state.situationConstraints
+    constraints: state.situationConstraints,
+    location: state.locationContext
   });
   const filtered = filterResources(ranked, {
     ...state.filters,
@@ -416,7 +440,7 @@ function allResults() {
 }
 
 function resourceById(id) {
-  return mergeDuplicates([...state.liveResults, ...state.storedResults])
+  return mergeDuplicates([...state.liveResults, ...state.storedResults, ...state.savedResources])
     .map(resource => normalizeResource(resource, state.lang))
     .find(resource => resource.id === id);
 }
@@ -456,18 +480,26 @@ function header() {
   return `<header class="topbar">
     <nav class="wrap nav" aria-label="${attr(tr('mainNavigation'))}">
       <button class="brand" data-page="home" aria-label="${attr(tr('navHome'))}"${brandCurrent ? ' aria-current="page"' : ''}>
-        <span class="logo" aria-hidden="true">B</span>
-        <span>BridgeAid<small>${tr('brandTagline')}</small></span>
+        <span class="logo" aria-hidden="true"><svg viewBox="0 0 64 64" width="40" height="40" focusable="false">
+          <rect width="64" height="64" rx="16" fill="#155f4a"/>
+          <circle cx="15" cy="23" r="5" fill="#f6a15f"/><circle cx="49" cy="23" r="5" fill="#f6a15f"/>
+          <path d="M15 23c7-12 27-12 34 0" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round"/>
+          <path d="M10 42h44M17 42V29M47 42V29" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round"/>
+          <path d="M26 42V31M38 42V31" fill="none" stroke="#d8efe7" stroke-width="3" stroke-linecap="round"/>
+        </svg></span>
+        <span><strong>BridgeAid</strong><small>${tr('brandTagline')}</small></span>
       </button>
       <button class="mobile-menu" data-menu aria-label="${attr(tr('openMenu'))}" aria-expanded="false">☰</button>
       <div class="nav-links" id="navLinks">
         ${navButton('home', tr('navHome'))}
         ${navButton('find', tr('navFind'))}
         ${navButton('nationwide', tr('navNationwide'))}
+        ${navButton('eligibility', tr('navEligibility'))}
+        ${navButton('saved', `${tr('navSaved')} (${state.saved.size})`)}
       </div>
       <div class="nav-actions">
-        <span class="mode-label">${state.mode === 'helper' ? 'Helper' : 'Self'}</span>
-        <button class="mode-chip" data-switch-mode aria-label="${attr(tr('switchMode'))}">Switch</button>
+        <span class="mode-label">${tr(state.mode === 'helper' ? 'modeLabelHelper' : 'modeLabelSelf')}</span>
+        <button class="mode-chip" data-switch-mode aria-label="${attr(tr('switchMode'))}">${tr('switch')}</button>
         <a class="header-211" href="tel:211" aria-label="${attr(tr('call211'))}">211</a>
         <label class="sr-only" for="language">${tr('language')}</label>
         <select id="language" aria-label="${attr(tr('language'))}">
@@ -594,45 +626,34 @@ function helperIntake() {
     : [state.helperIntake.serviceCategory].filter(Boolean);
   return `<section class="intake-card" aria-labelledby="intake-title">
     <div class="section-head">
-      <div><span class="step-label">${tr('helperIntakeStep')}</span><h2 id="intake-title">${tr('helperIntakeTitle')}</h2></div>
+      <h2 id="intake-title">${tr('helperIntakeTitle')}</h2>
       <button class="text-btn" data-clear-intake>${tr('clearIntake')}</button>
     </div>
-    <p class="privacy-notice">${tr('privacyNotice')}</p>
-    <p class="helper-explanation">${tr('sensitiveWarning')}</p>
-    <div class="helper-intake-steps">
-      <p><strong>1.</strong> ${tr('helperLocationQuestion')}</p>
-      <p><strong>2.</strong> ${tr('helperSupportQuestion')}</p>
-      <p><strong>3.</strong> ${tr('helperAuthorizedDescription')}</p>
-    </div>
-    <div class="intake-grid">
-      <label><span>${tr('location')} <strong class="required-label">${tr('required')}</strong></span>
-        <input id="helperLocationInput" name="location" value="${attr(state.helperIntake.location || '')}" data-intake required aria-required="true" autocomplete="off">
-        <div data-location-suggestions data-location-target="helper">${locationSuggestionMarkup('helper')}</div>
-      </label>
+    <p class="privacy-notice">${tr('helperPrivacyShort')}</p>
+    <div class="intake-grid helper-primary-fields">
       <fieldset class="helper-category-picker">
-        <legend>${tr('helperSupportTypes')} <strong class="required-label">${tr('required')}</strong></legend>
+        <legend>${tr('helperNeed')} <strong class="required-label">${tr('required')}</strong></legend>
         ${CATEGORY_CONFIG.filter(item => item.id !== 'all').map(item => `<label class="filter-check">
           <input type="checkbox" data-intake-category value="${item.id}" ${selectedCategories.includes(item.id) ? 'checked' : ''}>
           <span>${categoryIcon(item.id)} ${tr(item.key)}</span>
         </label>`).join('')}
       </fieldset>
+      <label><span>${tr('helperCityZip')} <strong class="required-label">${tr('required')}</strong></span>
+        <input id="helperLocationInput" name="location" value="${attr(state.helperIntake.location || '')}" data-intake required aria-required="true" autocomplete="off" placeholder="${attr(tr('locationPlaceholder'))}">
+        <div data-location-suggestions data-location-target="helper">${locationSuggestionMarkup('helper')}</div>
+      </label>
       ${helperField('safetyTonight', 'safetyTonight', 'select', [
         { value: 'safe', key: 'safe' },
         { value: 'notSafe', key: 'notSafe' },
         { value: 'unsure', key: 'unsure' }
       ])}
-      ${helperField('ageGroup', 'ageGroup')}
+      ${helperField('ageGroup', 'ageGroup', 'select', [
+        { value: 'child', key: 'ageChild' },
+        { value: 'teen', key: 'ageTeen' },
+        { value: 'adult', key: 'ageAdult' },
+        { value: 'older', key: 'ageOlderAdult' }
+      ])}
       ${helperField('childrenInvolved', 'children', 'select', yesNo)}
-      ${helperField('veteranStatus', 'veteranStatus', 'select', [
-        { value: 'yes', key: 'yes' },
-        { value: 'no', key: 'no' },
-        { value: 'preferNot', key: 'preferNot' }
-      ])}
-      ${helperField('identification', 'identification', 'select', [
-        { value: 'yes', key: 'yes' },
-        { value: 'no', key: 'no' },
-        { value: 'some', key: 'someDocuments' }
-      ])}
       ${helperField('transportation', 'transportation', 'select', [
         { value: 'walking', key: 'walkingOnly' },
         { value: 'transit', key: 'transit' },
@@ -644,22 +665,37 @@ function helperIntake() {
         { value: 'limited', key: 'limited' },
         { value: 'none', key: 'noPhone' }
       ])}
-      ${helperField('accessibility', 'accessibilityNeeds')}
       ${helperField('preferredLanguage', 'preferredLanguage')}
-      ${helperField('familyRestrictions', 'familyRestrictions')}
-      ${helperField('petRestrictions', 'petRestrictions')}
-      ${helperField('genderRestrictions', 'genderRestrictions')}
-      ${helperField('ageRestrictions', 'ageRestrictions')}
-      ${helperField('sobrietyRestrictions', 'sobrietyRestrictions')}
     </div>
-    <label class="notes-field"><span>${tr('additionalNotes')} <small>${tr('localDeviceNote')}</small></span>
-      <textarea name="notes" data-intake rows="3">${esc(state.helperIntake.notes || '')}</textarea>
-    </label>
-    <label class="notes-field"><span>${tr('helperSituationLabel')} <small>${tr('optional')}</small></span>
-      <textarea name="situation" data-intake rows="3" placeholder="${attr(tr('helperSituationPlaceholder'))}">${esc(state.helperIntake.situation || '')}</textarea>
-    </label>
+    <details class="helper-more">
+      <summary>${tr('moreDetails')}</summary>
+      <div class="intake-grid">
+        ${helperField('veteranStatus', 'veteranStatus', 'select', [
+          { value: 'yes', key: 'yes' },
+          { value: 'no', key: 'no' },
+          { value: 'preferNot', key: 'preferNot' }
+        ])}
+        ${helperField('identification', 'identification', 'select', [
+          { value: 'yes', key: 'yes' },
+          { value: 'no', key: 'no' },
+          { value: 'some', key: 'someDocuments' }
+        ])}
+        ${helperField('accessibility', 'accessibilityNeeds')}
+        ${helperField('petRestrictions', 'petRestrictions')}
+        ${helperField('familyRestrictions', 'familyRestrictions')}
+        ${helperField('genderRestrictions', 'genderRestrictions')}
+        ${helperField('ageRestrictions', 'ageRestrictions')}
+        ${helperField('sobrietyRestrictions', 'sobrietyRestrictions')}
+      </div>
+      <label class="notes-field"><span>${tr('additionalNotes')} <small>${tr('localDeviceNote')}</small></span>
+        <textarea name="notes" data-intake rows="2">${esc(state.helperIntake.notes || '')}</textarea>
+      </label>
+      <label class="notes-field"><span>${tr('helperSituationLabel')} <small>${tr('optional')}</small></span>
+        <textarea name="situation" data-intake rows="2" placeholder="${attr(tr('helperSituationPlaceholder'))}">${esc(state.helperIntake.situation || '')}</textarea>
+      </label>
+    </details>
     ${state.helperIntake.safetyTonight === 'notSafe' ? `<div class="danger-notice">${tr('safetySupportNote')}</div>` : ''}
-    <button class="primary" data-helper-search>${tr('buildOptions')}</button>
+    <button class="primary helper-find" data-helper-search>${tr('findResources')}</button>
   </section>`;
 }
 
@@ -669,34 +705,34 @@ function homePage() {
     <section class="hero ${helper ? 'helper-hero' : ''}">
       <div class="wrap">
         ${communityLink()}
-        <span class="eyebrow">Trusted help. Clear next steps.</span>
-        <h1>Free help should be easier to find.</h1>
-        <p>BridgeAid connects people with local services and nationwide programs.</p>
+        <span class="eyebrow">${tr('homeEyebrow')}</span>
+        <h1>${tr('homeTitle')}</h1>
+        <p>${tr('homeIntro')}</p>
         <div class="home-actions">
-          <button class="primary" data-page="find">Search Local Help</button>
-          <button class="secondary" data-page="nationwide">Explore Nationwide Help</button>
+          <button class="primary" data-page="find">${tr('homeLocalAction')}</button>
+          <button class="secondary" data-page="nationwide">${tr('homeNationwideAction')}</button>
         </div>
       </div>
     </section>
     ${statusMessages()}
     <section class="wrap section home-guide" aria-labelledby="home-guide-title">
-      <div class="mission-copy"><span class="eyebrow">Why BridgeAid exists</span><h2 id="home-guide-title">Our mission</h2>
-        <p>We make free resources easier to find, understand, and use.</p></div>
-      <div><h2>What BridgeAid helps with</h2>
+      <div class="mission-copy"><span class="eyebrow">${tr('homeWhy')}</span><h2 id="home-guide-title">${tr('homeMissionTitle')}</h2>
+        <p>${tr('homeMissionText')}</p></div>
+      <div><h2>${tr('homeHelpsTitle')}</h2>
         <ul class="home-help-list">
-          <li>Find help nearby</li>
-          <li>Check nationwide programs</li>
-          <li>Understand basic eligibility</li>
-          <li>Prepare before applying</li>
-          <li>Help yourself or another person</li>
+          <li>${tr('homeHelpNearby')}</li>
+          <li>${tr('homeHelpNationwide')}</li>
+          <li>${tr('homeHelpEligibility')}</li>
+          <li>${tr('homeHelpPrepare')}</li>
+          <li>${tr('homeHelpOthers')}</li>
         </ul>
       </div>
       <div class="home-guide-grid">
-        <article><strong>Local Help</strong><p>Use a city, ZIP code, address, or your current location to find nearby providers.</p></article>
-        <article><strong>Nationwide Help</strong><p>Browse official U.S. resources or answer only the questions relevant to your needs.</p></article>
-        <article><strong>Your privacy</strong><p>Exact GPS coordinates and nationwide quiz answers are not saved. Only organizations can confirm eligibility.</p></article>
+        <article><strong>${tr('navFind')}</strong><p>${tr('homeLocalCard')}</p></article>
+        <article><strong>${tr('navNationwide')}</strong><p>${tr('homeNationwideCard')}</p></article>
+        <article><strong>${tr('homePrivacyTitle')}</strong><p>${tr('homePrivacyText')}</p></article>
       </div>
-      ${helper ? `<p class="privacy-notice">Helper mode is active. Local Help includes the guided intake and device-local resource plan.</p>` : ''}
+      ${helper ? `<p class="privacy-notice">${tr('homeHelperActive')}</p>` : ''}
     </section>
   </main>`;
 }
@@ -812,23 +848,74 @@ function requestedAvailabilityMarkup(resource) {
   </div>`;
 }
 
-function eligibilityDisplay(program) {
-  if (!program) return tr('eligibilityResearchPending');
-  if (program.localEligibilityVerified) return program.eligibilitySummary;
-  if (['no_restrictions_listed', 'open'].includes(program.eligibilityStatus)) {
-    return program.eligibilitySummary || tr('noEligibilityRequirementsExplanation');
+function eligibilityDisplay(program, language = state.lang) {
+  if (!program) return tr('eligibilityResearchPending', {}, language);
+  if (program.localEligibilityVerified) {
+    return language === 'en' && program.eligibilitySummary
+      ? program.eligibilitySummary
+      : tr('localEligibilityPublishedSummary', {}, language);
   }
-  if (!program.inServiceArea) return tr('eligibilityOutOfArea');
+  if (['no_restrictions_listed', 'open'].includes(program.eligibilityStatus)) {
+    return language === 'en' && program.eligibilitySummary
+      ? program.eligibilitySummary
+      : tr('noEligibilityRequirementsExplanation', {}, language);
+  }
+  if (!program.inServiceArea) return tr('eligibilityOutOfArea', {}, language);
   if (program.eligibilityResearchStatus === 'technical_failure') {
-    return tr('eligibilityTemporarilyUnavailable');
+    return tr('eligibilityTemporarilyUnavailable', {}, language);
   }
   if (program.eligibilityResearchStatus === 'ambiguous_review') {
-    return tr('eligibilityNeedsReview');
+    return tr('eligibilityNeedsReview', {}, language);
   }
-  return tr('eligibilityResearchPending');
+  return tr('eligibilityResearchPending', {}, language);
+}
+
+function helperResourceCard(raw) {
+  const resource = normalizeResource(raw, state.lang);
+  const schedule = scheduleDisplay(resource);
+  const localProgram = localProgramForResource(resource, state.location);
+  const locationMatch = localProgram?.locationEligibility || matchesUserLocation(resource, state.locationContext);
+  const inPlan = state.helperPlan.some(item => item.id === resource.id);
+  const address = resource.address || resource.serviceAreas.join(', ') || tr('addressUnavailable');
+  return `<article class="resource-card helper-resource-card category-${attr(resource.category)}" data-resource-card="${attr(resource.id)}">
+    <div class="card-top">
+      <span class="tag">${categoryIcon(resource.category)} ${categoryLabel(resource.category)}</span>
+      <span class="result-type-badge">${tr('resourceTypeLocal')}</span>
+      <span class="verification-badge ${schedule.status.code === 'hours_not_listed' ? 'uncertain' : 'confirmed'}">${esc(schedule.label)}</span>
+    </div>
+    <h3>${esc(resource.organizationName || resource.name)}</h3>
+    ${resource.programName && resource.programName !== resource.organizationName ? `<p class="program-name">${esc(resource.programName)}</p>` : ''}
+    <div class="helper-card-summary">
+      <span>${esc(walkingDetails(resource) || address)}</span>
+      <span>${esc(availabilityText(resource))}</span>
+      <span>${tr(locationStatusKey(locationMatch))}</span>
+      <span>${esc(eligibilityDisplay(localProgram))}</span>
+    </div>
+    <div class="card-actions action-priority">
+      ${resource.phone ? `<a class="primary" href="tel:${attr(phoneHref(resource.phone))}">☎ ${tr('call')}</a>` : ''}
+      <a class="secondary" href="${attr(directionsUrl(resource, 'walking'))}" target="_blank" rel="noopener noreferrer">${tr('directions')}</a>
+      <button class="ghost" data-save="${attr(resource.id)}" aria-pressed="${state.saved.has(resource.id)}">${state.saved.has(resource.id) ? `★ ${tr('savedAction')}` : `☆ ${tr('save')}`}</button>
+      <button class="ghost" data-add-plan="${attr(resource.id)}" aria-pressed="${inPlan}">${inPlan ? tr('inHelperPlan') : tr('addToPlan')}</button>
+    </div>
+    <details class="helper-card-details"><summary>${tr('details')}</summary>
+      ${resource.description ? `<p>${esc(resource.description)}</p>` : ''}
+      <dl class="resource-meta">
+        <dt>${tr('address')}</dt><dd>${esc(address)}</dd>
+        <dt>${tr('hours')}</dt><dd>${weeklyHoursBlock(resource)}</dd>
+        <dt>${tr('lastVerified')}</dt><dd>${esc(resource.lastVerified || tr('nonePublished'))}</dd>
+      </dl>
+      <div class="card-actions card-tools">
+        <button class="text-action" data-requirements="${attr(resource.id)}">${tr('viewRequirements')}</button>
+        <button class="text-action" data-eligibility="${attr(resource.id)}">${tr('checkEligibility')}</button>
+        <button class="text-action" data-registration="${attr(resource.id)}">${tr('registrationHelp')}</button>
+        <button class="text-action" data-report="${attr(resource.id)}">${tr('reportIncorrect')}</button>
+      </div>
+    </details>
+  </article>`;
 }
 
 function resourceCard(raw, options = {}) {
+  if (state.mode === 'helper' && !options.forceFull) return helperResourceCard(raw);
   const resource = normalizeResource(raw, state.lang);
   const schedule = scheduleDisplay(resource);
   const localProgram = localProgramForResource(resource, state.location);
@@ -838,15 +925,16 @@ function resourceCard(raw, options = {}) {
   const applicationLink = resource.applicationLinks.find(link => link.type === 'application') || resource.applicationLinks[0];
   const application = safeUrl(applicationLink?.url || resource.registrationUrl);
   const applicationLabel = applicationLink
-    ? applicationLink.label || tr({
-      application: 'startApplication',
-      eligibility: 'checkEligibility',
-      questionnaire: 'completeQuestionnaire',
-      appointment: 'scheduleAppointment',
-      download: 'downloadApplication',
-      documents: 'viewRequiredDocuments',
-      contact: 'contactIntake'
-    }[applicationLink.type] || 'openApplication')
+    ? (state.lang === 'en' && applicationLink.label) || tr({
+        application: 'startApplication',
+        eligibility: 'checkEligibility',
+        questionnaire: 'completeQuestionnaire',
+        appointment: 'scheduleAppointment',
+        download: 'downloadApplication',
+        documents: 'viewRequiredDocuments',
+        contact: 'contactIntake',
+        instructions: 'officialWebsite'
+      }[applicationLink.type] || 'openApplication')
     : tr('officialApplication');
   const address = resource.address || tr('addressUnavailable');
   const verificationDate = resource.lastVerified
@@ -857,6 +945,7 @@ function resourceCard(raw, options = {}) {
   return `<article class="resource-card category-${attr(resource.category)}" data-resource-card="${attr(resource.id)}">
     <div class="card-top">
       <span class="tag">${categoryIcon(resource.category)} ${categoryLabel(resource.category)}</span>
+      <span class="result-type-badge">${tr('resourceTypeLocal')}</span>
       <span class="verification-badge ${schedule.status.code === 'hours_not_listed' ? 'uncertain' : 'confirmed'}"><span aria-hidden="true">${schedule.status.code === 'hours_not_listed' ? '!' : '✓'}</span>${schedule.label}</span>
     </div>
     <div><h3>${esc(resource.name)}</h3>${resource.programName ? `<p class="program-name">${esc(resource.programName)}</p>` : ''}</div>
@@ -865,11 +954,12 @@ function resourceCard(raw, options = {}) {
     ${requestedAvailabilityMarkup(resource)}
     <dl class="resource-meta">
       <dt>${tr('address')}</dt><dd>${esc(address)}</dd>
+      <dt>${tr('locationEligibility')}</dt><dd>${tr(locationStatusKey(localProgram?.locationEligibility))}</dd>
       ${walkingDetails(resource) ? `<dt>${tr('distance')}</dt><dd>${esc(walkingDetails(resource))}</dd>` : ''}
       <dt>${tr('hours')}</dt><dd>${weeklyHoursBlock(resource)}</dd>
       <dt>${tr('availability')}</dt><dd>${availabilityText(resource)}</dd>
       <dt>${tr('eligibilitySummary')}</dt><dd>${esc(eligibilityDisplay(localProgram))}</dd>
-      <dt>${tr('registrationRequirement')}</dt><dd>${esc(resource.registrationRequirement || tr('registrationUseContact'))}</dd>
+      <dt>${tr('registrationRequirement')}</dt><dd>${esc(state.lang === 'en' && resource.registrationRequirement ? resource.registrationRequirement : tr('registrationUseContact'))}</dd>
     </dl>
     <p class="verification-line"><strong>${tr('lastVerified')}:</strong> ${esc(verificationDate)} · ${esc(verificationText(resource))}</p>
     <div class="card-actions action-priority">
@@ -885,7 +975,7 @@ function resourceCard(raw, options = {}) {
       <button class="text-action" data-report="${attr(resource.id)}">${tr('reportIncorrect')}</button>
       <button class="text-action" data-save="${attr(resource.id)}" aria-pressed="${state.saved.has(resource.id)}">${state.saved.has(resource.id) ? `★ ${tr('savedAction')}` : `☆ ${tr('save')}`}</button>
       ${!options.compact && state.mode === 'helper' ? `
-        <button class="text-action" data-add-plan="${attr(resource.id)}" aria-pressed="${inPlan}">${inPlan ? '✓ In helper plan' : '+ Add to helper plan'}</button>
+        <button class="text-action" data-add-plan="${attr(resource.id)}" aria-pressed="${inPlan}">${inPlan ? tr('inHelperPlan') : tr('addToPlan')}</button>
         <button class="text-action" data-compare="${attr(resource.id)}" aria-pressed="${compared}">${compared ? '✓ ' : ''}${tr('compare')}</button>` : ''}
     </div>
   </article>`;
@@ -913,16 +1003,17 @@ function findPage() {
   if (!state.searched) {
     return `<main id="main" class="wrap section page local-help-page">
       <div class="page-head">
-        <div><span class="eyebrow">Help near you</span><h1>Local Help</h1>
-          <p>Search by city, ZIP code, address, or current location. A general location is enough.</p>
+        <div><span class="eyebrow">${tr(state.mode === 'helper' ? 'helperEyebrow' : 'selfEyebrow')}</span>
+          <h1>${tr(state.mode === 'helper' ? 'helperHero' : 'localHelpTitle')}</h1>
+          <p>${tr(state.mode === 'helper' ? 'helperSubShort' : 'localHelpIntro')}</p>
         </div>
         ${communityLink()}
       </div>
       ${statusMessages()}
       ${state.mode === 'helper'
-        ? `<div class="helper-layout"><div>${helperIntake()}</div>${planPanel()}</div>`
+        ? `<div class="helper-layout"><div>${helperIntake()}</div>${state.helperPlan.length ? planPanel() : ''}</div>`
         : `<section aria-label="Local resource search">${searchBox()}</section>`}
-      <p class="privacy-notice">Exact GPS coordinates are used only for the current search and are not saved.</p>
+      ${state.mode === 'self' ? `<p class="privacy-notice">${tr('gpsSessionOnly')}</p>` : ''}
     </main>`;
   }
   const resources = allResults();
@@ -934,11 +1025,13 @@ function findPage() {
       </div>
     </div>
     ${statusMessages()}
-    ${searchBox(true)}
+    ${state.mode === 'helper'
+      ? `<button class="secondary helper-edit-search" data-helper-edit>${tr('editHelperSearch')}</button>`
+      : searchBox(true)}
     ${state.searched ? filtersPanel() : ''}
     ${state.loading ? `<div class="loading-state" role="status"><span class="spinner" aria-hidden="true"></span><strong>${tr('loading')}</strong></div>` : ''}
     ${state.discoveryStatus === 'discovering' ? `<div class="cache-state">${tr('discoveryRunning')}</div>` : ''}
-    ${comparisonPanel(resources)}
+    ${state.mode === 'helper' ? '' : comparisonPanel(resources)}
     <div class="${state.mode === 'helper' && state.searched ? 'results-layout' : ''}">
       <section aria-labelledby="resource-list-title">
         ${state.searched ? `<div class="section-head results-heading"><div><h2 id="resource-list-title">${tr('resultsCount', { count: resources.length })}</h2><small>${tr('everyResultSourced')}</small></div>
@@ -988,23 +1081,10 @@ function statusCode(value) {
 }
 
 function planPanel() {
-  const created = state.helperPlan[0]?.planCreated;
-  const helperNeeds = (state.helperIntake.serviceCategories || [])
-    .map(categoryLabel)
-    .join(', ') || searchNeed() || tr('notEntered');
+  if (!state.helperPlan.length) return '';
   return `<aside class="plan-panel" aria-labelledby="plan-title">
     <div class="section-head"><div><span class="step-label">${tr('planLocal', { count: state.helperPlan.length })}</span><h2 id="plan-title">${tr('resourcePlan')}</h2></div></div>
-    <p><strong>${tr('need')}:</strong> ${esc(helperNeeds)}</p>
-    <p><strong>${tr('location')}:</strong> ${esc(state.helperIntake.location || state.location || tr('notEntered'))}</p>
-    ${created ? `<p class="plan-time">${tr('created')} ${esc(new Date(created).toLocaleString(state.lang))}<br>${tr('updated')} ${esc(new Date().toLocaleString(state.lang))}</p>` : ''}
-    <div class="plan-items">${state.helperPlan.length ? state.helperPlan.map(planItem).join('') : `<p class="empty-plan">${tr('planEmpty')}</p>`}</div>
-    <div class="plan-actions">
-      <button class="secondary" data-copy-plan ${state.helperPlan.length ? '' : 'disabled'}>${tr('copyPlan')}</button>
-      <button class="secondary" data-share-plan ${state.helperPlan.length ? '' : 'disabled'}>${tr('sharePlan')}</button>
-      <button class="ghost" data-print-plan ${state.helperPlan.length ? '' : 'disabled'}>${tr('print')}</button>
-      <button class="danger-button" data-clear-plan ${state.helperPlan.length || Object.keys(state.helperIntake).length ? '' : 'disabled'}>${tr('clearPlan')}</button>
-    </div>
-    <p class="storage-note">${tr('planStorageWarning')}</p>
+    <div class="plan-items">${state.helperPlan.map(planItem).join('')}</div>
   </aside>`;
 }
 
@@ -1016,8 +1096,6 @@ function planItem(item) {
       ${STATUS_CODES.map(option => `<option value="${option}" ${code === option ? 'selected' : ''}>${tr(STATUS_KEYS[option])}</option>`).join('')}
     </select></label>
     <label>${tr('localNote')}<textarea rows="2" data-plan-note="${attr(item.id)}" placeholder="${attr(tr('localNotePlaceholder'))}">${esc(item.note || '')}</textarea></label>
-    <label>${tr('questionsToAsk')}<textarea rows="2" data-plan-questions="${attr(item.id)}" placeholder="${attr(tr('questionsToAskPlaceholder'))}">${esc(item.questions || '')}</textarea></label>
-    <details><summary>${tr('callingScript')}</summary><p>${tr('callingScriptText', { program: item.name })}</p></details>
     <button class="text-action" data-remove-plan="${attr(item.id)}">${tr('remove')}</button>
   </article>`;
 }
@@ -1034,18 +1112,26 @@ function nationwideCard(raw, match = null) {
     : resource.eligibilityStatus === 'open'
       ? tr('onlineEligibilityOpen')
       : tr('onlineEligibilityVaries');
+  const matchLabel = match ? tr({
+    likely: 'matchLikely',
+    possible: 'matchPossible',
+    'more-info': 'matchMoreInfo',
+    unlikely: 'matchUnlikely'
+  }[match.code] || 'matchMoreInfo') : '';
   return `<article class="resource-card nationwide-card category-${attr(resource.category)}" data-resource-card="${attr(resource.id)}">
     <div class="card-top">
       <span class="tag">${categoryIcon(resource.category)} ${categoryLabel(resource.category)}</span>
+      <span class="result-type-badge">${tr(resource.eligibilityType === 'provider-directory' ? 'resourceTypeDirectory' : 'resourceTypeBenefit')}</span>
       <span class="verification-badge confirmed"><span aria-hidden="true">✓</span>${tr('nationwideAccess')}</span>
     </div>
     <div><h2>${esc(resource.name)}</h2></div>
     <p class="description">${esc(resource.serviceOffered || resource.description)}</p>
-    ${match ? `<section class="match-explanation" aria-label="${attr(match.label)}">
-      <strong class="match-label ${attr(match.code)}">${esc(match.label)}</strong>
-      ${match.matched.length ? `<p><strong>What matched:</strong> ${esc(match.matched.join('; '))}</p>` : ''}
-      ${match.unknown.length ? `<p><strong>What still needs confirmation:</strong> ${esc(match.unknown.join('; '))}</p>` : ''}
-      ${match.problems.length ? `<p><strong>What may not match:</strong> ${esc(match.problems.join('; '))}</p>` : ''}
+    ${match ? `<section class="match-explanation" aria-label="${attr(matchLabel)}">
+      <strong class="match-label ${attr(match.code)}">${esc(matchLabel)}</strong>
+      <p><strong>${tr('locationEligibility')}:</strong> ${tr(locationStatusKey({ code: match.locationCode }))}</p>
+      ${match.matched.length ? `<p><strong>${tr('whatMatched')}:</strong> ${esc(match.matched.join('; '))}</p>` : ''}
+      ${match.unknown.length ? `<p><strong>${tr('whatNeedsConfirmation')}:</strong> ${esc(match.unknown.join('; '))}</p>` : ''}
+      ${match.problems.length ? `<p><strong>${tr('whatMayNotMatch')}:</strong> ${esc(match.problems.join('; '))}</p>` : ''}
     </section>` : ''}
     <dl class="resource-meta">
       <dt>${tr('nationwideAvailability')}</dt><dd>${esc(resource.nationwideAvailability)}</dd>
@@ -1054,17 +1140,18 @@ function nationwideCard(raw, match = null) {
       <dt>${tr('waysToApply')}</dt><dd>${esc(applicationMethods(resource.applicationMethods) || tr('confirmOrganization'))}</dd>
       <dt>${tr('cost')}</dt><dd>${esc(resource.freeStatus || tr('confirmOrganization'))}</dd>
       ${resource.applicationDeadline ? `<dt>${tr('applicationDeadline')}</dt><dd>${esc(resource.applicationDeadline)}</dd>` : ''}
-      <dt>Eligibility type</dt><dd>${esc(resource.eligibilityType)}</dd>
-      <dt>Official source</dt><dd>${esc(resource.officialSourceName)}</dd>
+      <dt>${tr('eligibilityType')}</dt><dd>${esc(resource.eligibilityType)}</dd>
+      <dt>${tr('locationEligibility')}</dt><dd>${tr(resource.stateVariation ? 'locationRulesVary' : 'locationServesNationwide')}</dd>
+      <dt>${tr('officialSource')}</dt><dd>${esc(resource.officialSourceName)}</dd>
       <dt>${tr('documents')}</dt><dd>${resource.requiredDocuments.length
         ? `<ul>${resource.requiredDocuments.map(item => `<li>${esc(item)}</li>`).join('')}</ul>`
         : esc(tr('nonePublished'))}</dd>
     </dl>
     ${resource.requiresLocalProvider ? `<p class="local-provider-note">${tr('localProviderExplanation')}</p>` : ''}
     ${resource.applicationSteps.length ? `<details class="online-steps"><summary>${tr('applicationProcess')}</summary><ol>${resource.applicationSteps.map(step => `<li>${esc(step)}</li>`).join('')}</ol></details>` : ''}
-    <p class="verification-line"><strong>Eligibility reviewed:</strong> ${esc(resource.lastEligibilityVerified || resource.eligibilityLastVerified)} · ${esc(resource.eligibilityConfidence)} confidence</p>
+    <p class="verification-line"><strong>${tr('eligibilityReviewed')}:</strong> ${esc(resource.lastEligibilityVerified || resource.eligibilityLastVerified)} · ${tr('confidenceLabel', { value: resource.eligibilityConfidence })}</p>
     <div class="card-actions action-priority">
-      ${eligibilitySource ? `<a class="secondary" href="${attr(eligibilitySource)}" target="_blank" rel="noopener noreferrer">Official eligibility source ↗</a>` : ''}
+      ${eligibilitySource ? `<a class="secondary" href="${attr(eligibilitySource)}" target="_blank" rel="noopener noreferrer">${tr('officialEligibilitySource')} ↗</a>` : ''}
       ${resource.phone ? `<a class="primary" href="tel:${attr(phoneHref(resource.phone))}">☎ ${tr('call')}</a>` : ''}
       ${website ? `<a class="${resource.phone ? 'secondary' : 'primary'}" href="${attr(website)}" target="_blank" rel="noopener noreferrer">${esc(primaryLink?.label || tr('openOfficialResource'))} ↗</a>` : ''}
       <button class="ghost" data-save="${attr(resource.id)}" aria-pressed="${state.saved.has(resource.id)}">${state.saved.has(resource.id) ? `★ ${tr('savedAction')}` : `☆ ${tr('save')}`}</button>
@@ -1094,11 +1181,17 @@ function nationwideQuestionInput(question, value = '') {
   const options = question.type === 'state'
     ? US_STATE_OPTIONS
     : question.type === 'yesno'
-      ? [['yes', 'Yes'], ['no', 'No'], ['not-sure', 'Not sure / prefer not to answer']]
+      ? [['yes', tr('yes')], ['no', tr('no')], ['not-sure', tr('notSurePreferNot')]]
       : question.options;
   return `<select id="nationwide-answer" name="answer">
-    <option value="">Choose an answer</option>
-    ${options.map(([optionValue, label]) => `<option value="${attr(optionValue)}" ${String(value) === optionValue ? 'selected' : ''}>${esc(label)}</option>`).join('')}
+    <option value="">${tr('chooseAnswer')}</option>
+    ${options.map(([optionValue, label]) => {
+      const optionKey = `quizOption_${question.id}_${String(optionValue).replace(/[^a-z0-9]+/gi, '_')}`;
+      const translated = question.type === 'state'
+        ? (optionValue === 'OTHER' ? tr('anotherTerritory') : label)
+        : tr(optionKey);
+      return `<option value="${attr(optionValue)}" ${String(value) === optionValue ? 'selected' : ''}>${esc(translated)}</option>`;
+    }).join('')}
   </select>`;
 }
 
@@ -1109,28 +1202,28 @@ function nationwideQuizPanel(nationalResources) {
   if (quiz.completed) {
     const matches = matchNationwidePrograms(nationalResources, answers);
     return `<section class="nationwide-quiz quiz-results" aria-labelledby="quiz-title">
-      <div class="section-head"><div><span class="eyebrow">Preliminary screening</span><h2 id="quiz-title">Programs that may fit</h2></div>
-        <div class="quiz-actions"><button class="ghost" data-quiz-clear>Clear my answers</button><button class="ghost" data-quiz-restart>Start over</button></div></div>
-      <div class="notice"><strong>This is a preliminary match. The program makes the final eligibility decision.</strong> Only the organization can confirm eligibility. Rules, funding, location, and availability can change.</div>
-      <p>Your answers were used in this page only and were not saved.</p>
+      <div class="section-head"><div><span class="eyebrow">${tr('quizPreliminary')}</span><h2 id="quiz-title">${tr('quizResultsTitle')}</h2></div>
+        <div class="quiz-actions"><button class="ghost" data-quiz-clear>${tr('quizClear')}</button><button class="ghost" data-quiz-restart>${tr('quizStartOver')}</button></div></div>
+      <div class="notice"><strong>${tr('quizDisclaimerStrong')}</strong> ${tr('quizDisclaimerText')}</div>
+      <p>${tr('quizAnswersNotSaved')}</p>
       <div class="resource-list quiz-match-list">${matches.map(({ resource, decision }) => nationwideCard(resource, decision)).join('')}</div>
     </section>`;
   }
   if (!quiz.started) {
     const selected = new Set(answers.needs || []);
     return `<section class="nationwide-quiz" aria-labelledby="quiz-title">
-      <span class="eyebrow">Optional short quiz</span>
-      <h2 id="quiz-title">Find Programs for Me</h2>
-      <p>Choose the help you want. BridgeAid will ask at most eight relevant questions, one at a time.</p>
-      <div class="notice"><strong>Preliminary only.</strong> Skip any question. Do not enter names, account numbers, document numbers, diagnoses, or other sensitive details. Answers are not saved.</div>
+      <span class="eyebrow">${tr('quizOptional')}</span>
+      <h2 id="quiz-title">${tr('quizTitle')}</h2>
+      <p>${tr('quizIntro')}</p>
+      <div class="notice"><strong>${tr('quizPreliminaryOnly')}</strong> ${tr('quizPrivacy')}</div>
       <form id="nationwideQuizNeeds">
-        <fieldset class="quiz-needs"><legend>What kind of help are you looking for?</legend>
+        <fieldset class="quiz-needs"><legend>${tr('quizNeedsLegend')}</legend>
           ${CATEGORY_CONFIG.filter(item => !['all', 'other'].includes(item.id)).map(item => `<label class="filter-check">
             <input type="checkbox" name="needs" value="${item.id}" ${selected.has(item.id) ? 'checked' : ''}>
             <span>${categoryIcon(item.id)} ${tr(item.key)}</span>
           </label>`).join('')}
         </fieldset>
-        <button class="primary" type="submit">Start the quiz</button>
+        <button class="primary" type="submit">${tr('quizStart')}</button>
       </form>
     </section>`;
   }
@@ -1141,17 +1234,17 @@ function nationwideQuizPanel(nationalResources) {
   }
   const value = answers[question.id] ?? '';
   return `<section class="nationwide-quiz" aria-labelledby="quiz-title">
-    <span class="eyebrow">Question ${quiz.step + 1} of ${questions.length}</span>
-    <h2 id="quiz-title">Find Programs for Me</h2>
+    <span class="eyebrow">${tr('quizProgress', { current: quiz.step + 1, total: questions.length })}</span>
+    <h2 id="quiz-title">${tr('quizTitle')}</h2>
     <form id="nationwideQuizQuestion" data-question-id="${attr(question.id)}">
-      <label for="nationwide-answer"><strong>${esc(question.label)}</strong></label>
-      ${question.help ? `<p class="field-help">${esc(question.help)}</p>` : ''}
+      <label for="nationwide-answer"><strong>${esc(tr(`quizQuestion_${question.id}`))}</strong></label>
+      ${question.help ? `<p class="field-help">${esc(tr(`quizHelp_${question.id}`))}</p>` : ''}
       ${nationwideQuestionInput(question, value)}
       <div class="quiz-actions">
-        ${quiz.step ? '<button class="ghost" type="button" data-quiz-back>Back</button>' : ''}
-        <button class="ghost" type="button" data-quiz-skip>Skip this question</button>
-        <button class="ghost" type="button" data-quiz-clear>Clear my answers</button>
-        <button class="primary" type="submit">${quiz.step === questions.length - 1 ? 'See matches' : 'Next'}</button>
+        ${quiz.step ? `<button class="ghost" type="button" data-quiz-back>${tr('back')}</button>` : ''}
+        <button class="ghost" type="button" data-quiz-skip>${tr('quizSkip')}</button>
+        <button class="ghost" type="button" data-quiz-clear>${tr('quizClear')}</button>
+        <button class="primary" type="submit">${tr(quiz.step === questions.length - 1 ? 'quizSeeMatches' : 'next')}</button>
       </div>
     </form>
   </section>`;
@@ -1183,7 +1276,7 @@ function nationwidePage() {
     <p class="lead">${tr('nationwideIntro')}</p>
     ${statusMessages()}
     ${nationwideQuizPanel(normalized)}
-    <div class="section-head nationwide-browse-head"><div><span class="eyebrow">Official sources</span><h2>Browse all nationwide resources</h2></div></div>
+    <div class="section-head nationwide-browse-head"><div><span class="eyebrow">${tr('officialSources')}</span><h2>${tr('browseNationwide')}</h2></div></div>
     <section class="online-filters" aria-label="${attr(tr('nationwideFilters'))}">
       <label><span>${tr('category')}</span><select data-online-filter="category">
         <option value="all">${tr('categoryAll')}</option>
@@ -1213,17 +1306,16 @@ function nationwidePage() {
 }
 
 function savedPage() {
-  const available = mergeDuplicates([...state.liveResults, ...sourceResources])
+  const available = mergeDuplicates([...state.savedResources, ...state.liveResults, ...sourceResources])
     .filter(resource => String(resource.id) !== '211')
-    .filter(resource => resourceIsFresh(resource))
-    .map(resource => normalizeResource(resource, state.lang));
+    .map(resource => normalizeResource(resource, state.lang))
+    .filter(isDisplayableResource);
   const saved = available.filter(resource => state.saved.has(resource.id));
-  const unavailableCount = [...state.saved].filter(id => !available.some(resource => resource.id === id)).length;
   return `<main id="main" class="wrap section page">
-    <div class="page-head"><h1>${tr('savedTitle')}</h1></div>
-    ${unavailableCount ? `<div class="error-state">${tr('savedNeedsVerification', { count: unavailableCount })} <button class="ghost" data-retry-saved>${tr('retryVerification')}</button></div>` : ''}
+    <div class="page-head"><div><span class="eyebrow">${tr('savedEyebrow')}</span><h1>${tr('savedTitle')}</h1></div>
+      ${saved.length ? `<button class="danger-button" data-clear-saved>${tr('clearSaved')}</button>` : ''}</div>
     <div class="resource-list">${saved.length ? saved.map(resource =>
-      resource.scope !== 'location' ? nationwideCard(resource) : resourceCard(resource)).join('') : `<div class="empty-state">${tr('savedEmpty')}</div>`}</div>
+      resource.scope !== 'location' ? nationwideCard(resource) : resourceCard(resource, { forceFull: true })).join('') : `<div class="empty-state">${tr('savedEmpty')}</div>`}</div>
   </main>`;
 }
 
@@ -1572,6 +1664,15 @@ function drawer(content) {
 function chatRecommendation(resource, language) {
   const normalized = normalizeResource(resource, language);
   const website = safeUrl(normalized.registrationUrl || normalized.officialWebsite || normalized.website);
+  const local = normalized.scope === 'location'
+    ? localProgramForResource(normalized, state.location)
+    : null;
+  const locationLabel = normalized.scope === 'location'
+    ? (normalized.address || normalized.serviceAreas.join(', ') || tr('addressUnavailable', {}, language))
+    : tr('nationwideAccess', {}, language);
+  const eligibilityLabel = local
+    ? eligibilityDisplay(local, language)
+    : (normalized.whoItHelps || normalized.eligibilitySummary || tr('eligibilityResearchPending', {}, language));
   const schedule = resourceScheduleState(normalized);
   const scheduleText = schedule.code === 'open_now'
     ? tr('openNow', {}, language)
@@ -1586,9 +1687,15 @@ function chatRecommendation(resource, language) {
           : tr('closed', {}, language);
   return `<article class="chat-resource">
     <strong>${esc(normalized.name)}</strong>
-    <span>${esc(normalized.address || tr('addressUnavailable', {}, language))}</span>
+    <span>${esc(locationLabel)}</span>
     <span>${tr('hours', {}, language)}: ${esc(scheduleText)}</span>
-    ${website ? `<a href="${attr(website)}" target="_blank" rel="noopener noreferrer">${tr(normalized.registrationUrl ? 'officialApplication' : 'officialWebsite', {}, language)} ↗</a>` : ''}
+    <span>${tr('eligibility', {}, language)}: ${esc(eligibilityLabel)}</span>
+    <div class="card-actions">
+      ${normalized.phone ? `<a href="tel:${attr(phoneHref(normalized.phone))}">${tr('call', {}, language)}</a>` : ''}
+      ${normalized.scope === 'location' ? `<a href="${attr(directionsUrl(normalized, 'walking'))}" target="_blank" rel="noopener noreferrer">${tr('directions', {}, language)}</a>` : ''}
+      <button class="ghost" data-save="${attr(normalized.id)}" aria-pressed="${state.saved.has(normalized.id)}">${state.saved.has(normalized.id) ? `★ ${tr('savedAction', {}, language)}` : `☆ ${tr('save', {}, language)}`}</button>
+      ${website ? `<a href="${attr(website)}" target="_blank" rel="noopener noreferrer">${tr(normalized.registrationUrl ? 'officialApplication' : 'officialWebsite', {}, language)} ↗</a>` : ''}
+    </div>
   </article>`;
 }
 
@@ -1626,6 +1733,8 @@ function footer() {
 function render(options = {}) {
   document.documentElement.lang = state.lang === 'zh' ? 'zh-Hans' : state.lang;
   document.title = tr('appTitle');
+  const skipLink = document.querySelector('.skip-link');
+  if (skipLink) skipLink.textContent = tr('skipToContent');
   const pageFactory = {
     home: homePage,
     find: findPage,
@@ -1640,7 +1749,7 @@ function render(options = {}) {
     page = pageFactory();
   } catch (error) {
     console.error('BridgeAid render failed', error);
-    app.innerHTML = `${header()}<main id="main" class="wrap section page"><div class="error-state">This page could not be displayed. Please reload or choose another page.</div></main>${footer()}${modeSelector()}`;
+    app.innerHTML = `${header()}<main id="main" class="wrap section page"><div class="error-state">${tr('pageRenderError')}</div></main>${footer()}${modeSelector()}`;
     return;
   }
   app.innerHTML = `${header()}${page}${footer()}${chat()}${requirementsPanel()}${reportPanel()}${modeSelector()}`;
@@ -1750,9 +1859,12 @@ async function performNearbySearch({
     return state.liveResults;
   }
   try {
-    const point = coordinates || await geocodeLocation(location);
+    const point = coordinates
+      ? await reverseGeocodeLocation(coordinates).catch(() => ({ ...coordinates, label: location }))
+      : await geocodeLocation(location);
     if (!searchLifecycle.isCurrent(request)) return state.liveResults;
     state.coordinates = { lat: point.lat, lng: point.lng };
+    state.locationContext = locationContext({ ...point, location: point.label || location });
     state.situationConstraints = parseSituation(`${state.otherNeed} ${state.situation}`, {
       location: state.location,
       coordinates: state.coordinates
@@ -1940,6 +2052,7 @@ function runLocalHelpSearch(input) {
     return false;
   }
   applyLocalSearchRequest(state, normalized.request, { parseSituation, sourceResources });
+  state.locationContext = locationContext(normalized.request.location);
   applySituationFilters([
     state.otherNeed,
     state.situation,
@@ -2012,7 +2125,10 @@ async function sendChat(form) {
   }
   const messageLocation = locationFromMessage(message);
   const messageCategory = assistantCategory(message);
-  if (messageLocation) state.location = messageLocation;
+  if (messageLocation) {
+    state.location = messageLocation;
+    state.locationContext = locationContext(messageLocation);
+  }
   if (messageCategory) {
     state.category = messageCategory;
     state.query = categoryLabel(messageCategory);
@@ -2027,25 +2143,31 @@ async function sendChat(form) {
     state.location.toLowerCase(),
     state.category,
     state.chatContext.category || '',
-    state.chatContext.intent || ''
+    state.chatContext.intent || '',
+    [...state.saved].sort().join(',')
   ].join('|');
   const liveResourceIds = new Set(state.liveResults.map(resource => String(resource.id)));
-  const assistantResources = mergeDuplicates([...state.liveResults, ...state.storedResults])
+  const assistantResources = mergeDuplicates([
+    ...state.liveResults,
+    ...state.storedResults,
+    ...state.savedResources,
+    ...sourceResources
+  ])
     .filter(resource => String(resource.id) !== '211')
-    .filter(resource => resource.scope !== 'nationwide-online')
-    .filter(resource => resourceIsFresh(resource))
-    .filter(resource => filterResources([resource], state.filters).length > 0)
+    .map(resource => normalizeResource(resource, messageLanguage))
+    .filter(isDisplayableResource)
+    .filter(resource => resource.scope !== 'location'
+      || filterResources([resource], state.filters).length > 0)
     .filter(resource => {
+      if (resource.scope !== 'location') return true;
       if (liveResourceIds.has(String(resource.id))) return true;
-      const isLocationBound = Boolean(
-        resource.serviceAreas?.length
-        || resource.serviceAreaZipRanges?.length
-        || resource.serviceAreaZipPrefixes?.length
-      );
-      return isLocationBound && servesLocation(resource, state.location);
+      const locationMatch = matchesUserLocation(resource, state.locationContext);
+      return resourceIsFresh(resource)
+        && locationMatch.serves === true
+        && locationMatch.confirmed;
     });
   const selectedForAssistant = currentResource();
-  const selectedIsLocal = selectedForAssistant
+  const selectedIsAvailable = selectedForAssistant
     && assistantResources.some(resource => String(resource.id) === selectedForAssistant.id);
   const task = storedFirstResponse({
     answer: () => {
@@ -2056,8 +2178,23 @@ async function sendChat(form) {
         languageExplicit: state.languageExplicit,
         currentLocation: state.location,
         resources: assistantResources,
-        context: state.chatContext,
-        selectedResource: selectedIsLocal ? selectedForAssistant : null,
+        context: {
+          ...state.chatContext,
+          category: state.chatContext.category
+            || state.category
+            || state.helperIntake.serviceCategories?.[0]
+            || '',
+          mode: state.mode,
+          helperConstraints: state.mode === 'helper' ? {
+            ageGroup: state.helperIntake.ageGroup || '',
+            transportation: state.helperIntake.transportation || '',
+            phoneAccess: state.helperIntake.phoneAccess || '',
+            preferredLanguage: state.helperIntake.preferredLanguage || ''
+          } : {}
+        },
+        selectedResource: selectedIsAvailable ? selectedForAssistant : null,
+        quizAnswers: state.nationwideQuiz.answers,
+        savedIds: [...state.saved],
         translate
       });
       return responseCache.set(responseKey, answer);
@@ -2074,6 +2211,16 @@ async function sendChat(form) {
   performance.mark?.('bridgeai-response-ready');
   performance.measure?.('bridgeai-stored-response', 'bridgeai-response-start', 'bridgeai-response-ready');
   state.chatContext = answer.context;
+  if (answer.action?.type === 'save') {
+    const resource = assistantResources.find(item => String(item.id) === String(answer.action.resourceId));
+    if (resource) {
+      state.saved.add(String(resource.id));
+      state.savedResources = [
+        ...state.savedResources.filter(item => String(item.id) !== String(resource.id)),
+        resource
+      ];
+    }
+  }
   state.chatMessages.push({
     role: 'assistant',
     text: answer.text,
@@ -2092,7 +2239,7 @@ app.addEventListener('submit', event => {
   if (event.target.matches('#nationwideQuizNeeds')) {
     const needs = new FormData(event.target).getAll('needs').map(String);
     if (!needs.length) {
-      state.errorText = 'Choose at least one kind of help to start the quiz.';
+      state.errorText = tr('quizNeedRequired');
       render({ focus: '#quiz-title' });
       return;
     }
@@ -2176,6 +2323,7 @@ app.addEventListener('click', async event => {
   }
   if (target.matches('[data-location-suggestion]')) {
     state.location = target.dataset.locationSuggestion;
+    state.locationContext = locationContext(state.location);
     if (target.dataset.locationTarget === 'helper') {
       state.helperIntake.location = state.location;
       persistHelper();
@@ -2222,9 +2370,29 @@ app.addEventListener('click', async event => {
   }
   if (target.matches('[data-save]')) {
     const id = target.dataset.save;
-    state.saved.has(id) ? state.saved.delete(id) : state.saved.add(id);
+    if (state.saved.has(id)) {
+      state.saved.delete(id);
+      state.savedResources = state.savedResources.filter(resource => String(resource.id) !== String(id));
+    } else {
+      state.saved.add(id);
+      const snapshot = resourceById(id);
+      if (snapshot) {
+        state.savedResources = [
+          ...state.savedResources.filter(resource => String(resource.id) !== String(id)),
+          snapshot
+        ];
+      }
+    }
     persistShared();
     render();
+  }
+  if (target.matches('[data-clear-saved]')) {
+    if (window.confirm(tr('confirmClearSaved'))) {
+      state.saved.clear();
+      state.savedResources = [];
+      persistShared();
+      render({ focus: '#main' });
+    }
   }
   if (target.matches('[data-eligibility]')) {
     state.eligibility.resourceId = target.dataset.eligibility;
@@ -2271,6 +2439,10 @@ app.addEventListener('click', async event => {
   if (target.matches('[data-helper-search]')) {
     runLocalHelpSearch(helperSearchInput());
   }
+  if (target.matches('[data-helper-edit]')) {
+    state.searched = false;
+    render({ focus: '#helperLocationInput' });
+  }
   if (target.matches('[data-clear-intake]')) {
     state.helperIntake = {};
     persistHelper();
@@ -2298,7 +2470,7 @@ app.addEventListener('click', async event => {
   if (target.matches('[data-share-plan]')) {
     const text = planText();
     try {
-      if (navigator.share) await navigator.share({ title: 'BridgeAid resource plan', text });
+      if (navigator.share) await navigator.share({ title: tr('sharePlanTitle'), text });
       else await navigator.clipboard.writeText(text);
       state.noticeKey = 'copied';
     } catch (error) {
@@ -2378,6 +2550,7 @@ app.addEventListener('click', async event => {
   }
   if (target.matches('[data-clear-location]')) {
     state.location = '';
+    state.locationContext = locationContext('');
     state.coordinates = null;
     state.activeSearchKey = '';
     state.storedResults = sourceResources;
@@ -2394,6 +2567,8 @@ app.addEventListener('click', async event => {
     state.coordinates = null;
     state.helperIntake = {};
     state.helperPlan = [];
+    state.saved.clear();
+    state.savedResources = [];
     state.liveResults = [];
     state.activeSearchKey = '';
     state.searched = false;

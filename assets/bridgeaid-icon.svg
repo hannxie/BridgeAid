@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title id="title">BridgeAid bridge icon</title>
+  <rect width="64" height="64" rx="16" fill="#155f4a"/>
+  <circle cx="15" cy="23" r="5" fill="#f6a15f"/>
+  <circle cx="49" cy="23" r="5" fill="#f6a15f"/>
+  <path d="M15 23c7-12 27-12 34 0" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round"/>
+  <path d="M10 42h44M17 42V29M47 42V29" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round"/>
+  <path d="M26 42V31M38 42V31" fill="none" stroke="#d8efe7" stroke-width="3" stroke-linecap="round"/>
+</svg>

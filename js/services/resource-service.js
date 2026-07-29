@@ -1,4 +1,6 @@
 import { resourceAvailabilityAt, resourceScheduleState } from './schedule-service.js';
+import { matchesUserLocation } from './location-eligibility-service.js';
+import { hasSpecificProgramName, isDisallowedPoliticalResult } from './resource-quality-service.js';
 
 const SEARCH_CACHE_FRESH_FOR_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_VERIFICATION_PERIOD_DAYS = 90;
@@ -46,13 +48,20 @@ export function textFor(value, language = 'en') {
   return value[language] || value.en || '';
 }
 
+function localizedTextFor(value, language = 'en') {
+  if (!value) return '';
+  if (language === 'en') return textFor(value, language);
+  if (typeof value === 'object') return value[language] || '';
+  return '';
+}
+
 function fallbackDescription(resource, language = 'en') {
   const category = String(resource.category || 'community support').replace(/_/g, ' ');
   const location = resource.address || resource.city || resource.county || '';
   const descriptions = {
     en: `A ${location ? 'local ' : ''}${category} listing for people seeking community support. Confirm services, eligibility, hours, and the next step with the provider before relying on it.`,
-    es: `Un recurso ${location ? 'local ' : ''}de ${category} para personas que buscan apoyo comunitario. Confirme los servicios, la elegibilidad, el horario y el siguiente paso con el proveedor.`,
-    zh: `面向需要社区支持者的${location ? '本地' : ''}${category}资源。依赖该信息前，请向服务机构确认服务、资格、时间和下一步。`
+    es: `Un recurso ${location ? 'local ' : ''}para personas que buscan apoyo comunitario. Confirme los servicios, la elegibilidad, el horario y el siguiente paso con el proveedor.`,
+    zh: `面向需要社区支持者的${location ? '本地' : ''}资源。使用前，请向服务机构确认服务、资格、时间和下一步。`
   };
   return descriptions[language] || descriptions.en;
 }
@@ -78,11 +87,16 @@ export function normalizeResource(resource, language = 'en') {
     name: resource.name || resource.organizationName || 'Unnamed organization',
     category: resource.category || 'all',
     scope: resource.scope || 'location',
+    resultType: resource.resultType || (resource.scope === 'nationwide-online'
+      ? 'nationwide-benefit'
+      : resource.scope === 'provider-directory'
+        ? 'nationwide-directory'
+        : 'local-service'),
     onlineOnly: Boolean(resource.onlineOnly),
     requiresLocalProvider: Boolean(resource.requiresLocalProvider),
     subcategories: Array.isArray(resource.subcategories) ? resource.subcategories : [],
     services,
-    description: textFor(resource.description, language) || fallbackDescription(resource, language),
+    description: localizedTextFor(resource.description, language) || fallbackDescription(resource, language),
     phone: resource.phone || '',
     email: resource.email || '',
     address: resource.address || '',
@@ -121,11 +135,12 @@ export function normalizeResource(resource, language = 'en') {
     appointmentRequirement: appointmentText,
     walkInStatus: textFor(resource.walkInStatus, language)
       || (/walk.?in/i.test(`${appointmentText} ${accessText}`) ? 'Walk-ins accepted' : ''),
-    eligibilitySummary: textFor(resource.eligibilitySummary || resource.eligibility, language),
+    eligibilitySummary: localizedTextFor(resource.eligibilitySummary || resource.eligibility, language),
     eligibilityStatus: resource.eligibilityStatus || '',
     eligibilityDetails: Object.fromEntries(Object.entries(resource.eligibilityDetails || {})
       .map(([key, value]) => [key, textFor(value, language)])),
     eligibilityRules: Array.isArray(resource.eligibilityRules) ? resource.eligibilityRules : [],
+    eligibilityByState: resource.eligibilityByState || resource.eligibilityRulesByState || {},
     eligibilityQuestions: Array.isArray(resource.eligibilityQuestions) ? resource.eligibilityQuestions : [],
     eligibilityType: resource.eligibilityType || '',
     officialSourceName: resource.officialSourceName || resource.organizationName || resource.source || '',
@@ -160,9 +175,9 @@ export function normalizeResource(resource, language = 'en') {
     afterApplying: textFor(resource.afterApplying, language),
     applicationSourceUrl: resource.applicationSourceUrl || '',
     applicationLastVerified: resource.applicationLastVerified || '',
-    serviceOffered: textFor(resource.serviceOffered || resource.description, language),
+    serviceOffered: localizedTextFor(resource.serviceOffered || resource.description, language) || fallbackDescription(resource, language),
     nationwideAvailability: textFor(resource.nationwideAvailability, language),
-    whoItHelps: textFor(resource.whoItHelps || resource.eligibilitySummary || resource.eligibility, language),
+    whoItHelps: localizedTextFor(resource.whoItHelps || resource.eligibilitySummary || resource.eligibility, language),
     officialDomains: Array.isArray(resource.officialDomains) ? resource.officialDomains : [],
     freeStatus: resource.freeStatus || 'Confirm with organization',
     source: resource.source || 'Source not named',
@@ -171,7 +186,13 @@ export function normalizeResource(resource, language = 'en') {
     lastVerified: resource.lastVerified || resource.verified || '',
     verificationExpiresAt: resource.verificationExpiresAt || '',
     verificationPeriodDays: Number(resource.verificationPeriodDays) || DEFAULT_VERIFICATION_PERIOD_DAYS,
-    confidence: Number.isFinite(Number(resource.confidence)) ? Number(resource.confidence) : null,
+    confidence: Number.isFinite(Number(resource.confidence))
+      ? Number(resource.confidence)
+      : sourceUrls.length
+        ? (resource.verified || resource.lastVerified ? 0.8 : 0.55)
+        : null,
+    reviewRequired: Boolean(resource.reviewRequired),
+    qualityReviewReasons: Array.isArray(resource.qualityReviewReasons) ? resource.qualityReviewReasons : [],
     verificationStatus: resource.verificationStatus || (resource.verified ? 'Previously checked' : 'Needs confirmation'),
     discoveryStatus: resource.discoveryStatus || '',
     conflicts: Array.isArray(resource.conflicts) ? resource.conflicts : [],
@@ -180,7 +201,7 @@ export function normalizeResource(resource, language = 'en') {
     distance: rawDistance !== null && rawDistance !== undefined && rawDistance !== '' && Number.isFinite(Number(rawDistance)) ? Number(rawDistance) : null,
     _rank: Number(resource._rank || 0),
     _rankReasons: Array.isArray(resource._rankReasons) ? resource._rankReasons : [],
-    _rankExplanation: resource._rankExplanation || '',
+    _rankExplanation: language === 'en' ? resource._rankExplanation || '' : '',
     _availabilityAtRequest: resource._availabilityAtRequest || null
   };
 }
@@ -448,6 +469,7 @@ export function stableResourceComparator(a, b) {
 export function rankResources(resources, context = {}) {
   const wanted = new Set(context.categories || []);
   const constraints = context.constraints || {};
+  const userLocation = context.location || '';
   return resources.map(item => {
     const r = normalizeResource(item);
     let score = 0;
@@ -459,6 +481,22 @@ export function rankResources(resources, context = {}) {
     } else if (wanted.size) {
       score -= 80;
     }
+    const locationMatch = matchesUserLocation(r, userLocation);
+    if (locationMatch.serves === true && locationMatch.confirmed) {
+      score += 60;
+      reasons.push(`serves the selected ${locationMatch.level || 'location'}`);
+    } else if (locationMatch.serves === false) {
+      score -= 160;
+      reasons.push('does not serve the selected location');
+    } else if (userLocation) {
+      score -= 25;
+      reasons.push('has an unconfirmed service area');
+    }
+    if (r.localEligibilityVerified) {
+      score += 35;
+      reasons.push('has locally verified eligibility rules');
+    }
+    if (hasSpecificProgramName(r) && !isDisallowedPoliticalResult(r)) score += 25;
     let requestedAvailability = null;
     if (constraints.requestedInstant instanceof Date && !Number.isNaN(constraints.requestedInstant.getTime())) {
       requestedAvailability = resourceAvailabilityAt(r, constraints.requestedInstant);
@@ -508,8 +546,9 @@ export function rankResources(resources, context = {}) {
     if (r.distance !== null) reasons.push(`${r.distance.toFixed(1)} miles away`);
     if (r.availabilityStatus === 'Open now') score += 18;
     if (r.walkInStatus) score += 5;
-    if (r.sourceUrls.length) score += 6;
+    if (r.sourceUrls.length) score += 15;
     if (r.confidence !== null) score += r.confidence * 10;
+    if (resourceIsFresh(r)) score += 10;
     const explanation = reasons.length
       ? `Prioritized because it ${reasons.slice(0, 3).join(', ')}.`
       : 'Ranked using verified service details, distance, and availability evidence.';

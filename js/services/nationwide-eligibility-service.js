@@ -1,3 +1,5 @@
+import { eligibilityForLocation } from './location-eligibility-service.js';
+
 export const QUIZ_QUESTION_BANK = Object.freeze({
   state: {
     label: 'What state or territory do you live in?',
@@ -198,34 +200,65 @@ function evaluateRule(rule, answers) {
 }
 
 export function evaluateNationwideProgram(resource, answers = {}) {
+  const locationEligibility = eligibilityForLocation(resource, {
+    label: answers.location || answers.state || '',
+    state: answers.state || ''
+  });
+  const withLocation = result => ({
+    ...result,
+    locationCode: locationEligibility.code,
+    locationConfirmed: locationEligibility.confirmed,
+    locationSourceUrl: locationEligibility.sourceUrl || resource.eligibilitySourceUrl || ''
+  });
+  if (locationEligibility.serves === false) {
+    return withLocation({
+      label: 'Unlikely match',
+      code: 'unlikely',
+      matched: [],
+      unknown: [],
+      problems: ['This program does not serve the selected location.']
+    });
+  }
   if (resource.eligibilityType === 'provider-directory' || resource.eligibilityType === 'benefit-screening-tool') {
-    return {
+    return withLocation({
       label: 'More information needed',
       code: 'more-info',
       matched: [],
       unknown: ['This resource helps find or screen programs; the selected provider decides eligibility.'],
       problems: []
-    };
+    });
   }
-  const evaluations = (resource.eligibilityRules || []).map(rule => evaluateRule(rule, answers));
+  if (resource.stateVariation && ['missing', 'rules-unconfirmed', 'unconfirmed'].includes(locationEligibility.code)) {
+    return withLocation({
+      label: 'More information needed',
+      code: 'more-info',
+      matched: [],
+      unknown: [answers.state
+        ? 'Official rules for the selected state have not been verified in BridgeAid.'
+        : 'Choose a state before BridgeAid evaluates location-dependent rules.'],
+      problems: []
+    });
+  }
+  const evaluations = (locationEligibility.rules || resource.eligibilityRules || [])
+    .map(rule => evaluateRule(rule, answers));
   const matched = evaluations.filter(item => item.outcome === 'pass').map(item => item.label);
   const problems = evaluations.filter(item => item.outcome === 'fail').map(item => item.label);
   const unknown = evaluations.filter(item => item.outcome === 'unknown').map(item => item.label);
-  if (problems.length) return { label: 'Unlikely match', code: 'unlikely', matched, unknown, problems };
+  if (problems.length) return withLocation({ label: 'Unlikely match', code: 'unlikely', matched, unknown, problems });
   if (!resource.manualReview && evaluations.length && !unknown.length) {
-    return { label: 'Likely match', code: 'likely', matched, unknown, problems };
+    return withLocation({ label: 'Likely match', code: 'likely', matched, unknown, problems });
   }
   if (resource.manualReview) {
     unknown.push('The official program or a trained reviewer must confirm additional criteria.');
-    return { label: 'More information needed', code: 'more-info', matched, unknown, problems };
+    return withLocation({ label: 'More information needed', code: 'more-info', matched, unknown, problems });
   }
   if (evaluations.length && unknown.length) {
-    return { label: 'Possible match', code: 'possible', matched, unknown, problems };
+    return withLocation({ label: 'Possible match', code: 'possible', matched, unknown, problems });
   }
   if (!evaluations.length) {
     unknown.push('No complete machine-checkable eligibility rules are published for this resource.');
   }
-  return { label: 'More information needed', code: 'more-info', matched, unknown, problems };
+  return withLocation({ label: 'More information needed', code: 'more-info', matched, unknown, problems });
 }
 
 export function matchNationwidePrograms(resources = [], answers = {}) {
