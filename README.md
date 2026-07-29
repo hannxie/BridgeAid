@@ -87,7 +87,7 @@ BridgeAI
 └── Internet Discovery foundation
 ```
 
-The current browser implementation is deterministic and source-bound; it does not call a generative AI API. It returns partial cached/static results when live discovery fails and does not invent missing facts.
+The current browser implementation is deterministic and source-bound; it does not call a generative AI API. It only reuses cached or curated records while they remain inside their approved verification period. Expired records are hidden and queued for re-verification, and missing facts are never invented.
 
 Relevant files:
 
@@ -280,7 +280,7 @@ The deterministic suite contains 66 checks covering:
 6. Choose “Not safe tonight” and confirm the general safety notice appears without hiding resources.
 7. Add a resource to the plan, compare resources, update status, add a note, copy, print, remove, and clear.
 8. Search 98101 with “All Services,” then open the Seattle Utility Discount Program eligibility and registration workflows. Confirm the exact local rules, documents, deadline, official actions, source, and verified date are shown.
-9. Disable the network and repeat a previously cached search. Confirm saved/static results remain.
+9. Disable the network and repeat a previously cached search. Confirm only still-current verified records remain and expired records are not shown.
 10. Test keyboard-only navigation, visible focus, 200% browser zoom, and a screen reader.
 11. Test widths of 320 px, 768 px, and desktop.
 12. Inspect the console during critical workflows and confirm there are no uncaught errors.

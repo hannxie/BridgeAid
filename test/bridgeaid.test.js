@@ -17,7 +17,10 @@ import {
   cacheKey,
   readCachedSearch,
   writeCachedSearch,
-  sortResources
+  sortResources,
+  resourceIsFresh,
+  freshResources,
+  coordinateCacheKey
 } from '../js/services/resource-service.js';
 import {
   nextRecurringEvent,
@@ -59,7 +62,11 @@ import {
 } from '../js/services/helper-plan-service.js';
 import { detectIntent, routeAssistantRequest } from '../js/services/orchestrator.js';
 import { requireAdmin, applyAdminAction, AuthorizationError } from '../server/services/admin-service.js';
-import { createJob, recordJobFailure } from '../server/services/background-job-service.js';
+import {
+  createJob,
+  createVerificationJobs,
+  recordJobFailure
+} from '../server/services/background-job-service.js';
 import {
   LOCALES,
   translate,
@@ -101,7 +108,7 @@ import {
   storedFirstResponse
 } from '../js/services/performance-service.js';
 import { registrationGuidance } from '../js/services/registration-service.js';
-import { categories, resources } from '../data/resources.js';
+import { categories, resources, nationwideResources } from '../data/resources.js';
 
 class MemoryStorage {
   constructor() {
@@ -181,7 +188,7 @@ test('service taxonomy uses the requested complete order with All Services first
 });
 
 test('verified Seattle additions include actionable local evidence and full addresses', () => {
-  const local = resources.filter(resource => resource.verified === '2026-07-28');
+  const local = resources.filter(resource => resource.city === 'Seattle' && resource.verified === '2026-07-28');
   assert.ok(local.length >= 12);
   for (const resource of local) {
     assert.match(resource.address, /Seattle, WA \d{5}$/);
@@ -228,6 +235,17 @@ test('duplicate merging retains supporting evidence', () => {
   assert.deepEqual(new Set(merged[0].sourceUrls), new Set(['https://one.example', 'https://two.example']));
 });
 
+test('duplicate merging and relevance order are identical across input arrival order', () => {
+  const rows = [
+    { id: 'b', name: 'Community Pantry', address: '1 Main St', phone: '555-111-2222', category: 'food', distance: 2, sourceUrls: ['https://b.example'] },
+    { id: 'a', name: 'Community Pantry', address: '1 Main Street', phone: '(555) 111-2222', category: 'food', distance: 2, sourceUrls: ['https://a.example'] },
+    { id: 'c', name: 'Another Pantry', address: '2 Main St', category: 'food', distance: 2, sourceUrls: ['https://c.example'] }
+  ];
+  const first = rankResources(mergeDuplicates(rows), { categories: ['food'] });
+  const second = rankResources(mergeDuplicates([...rows].reverse()), { categories: ['food'] });
+  assert.deepEqual(first, second);
+});
+
 test('geographic ranking favors relevant nearby results', () => {
   const ranked = rankResources([
     { id: 'far', name: 'Far', category: 'food', distance: 20, sourceUrls: ['https://a.example'] },
@@ -250,14 +268,45 @@ test('cache keys vary by location category and radius', () => {
 
 test('resource cache returns fresh and stale saved results deterministically', () => {
   const now = Date.UTC(2026, 0, 2);
-  const cache = writeCachedSearch({}, 'key', [{ id: 'a', name: 'A' }], now);
+  const cache = writeCachedSearch({}, 'key', [{
+    id: 'a',
+    name: 'A',
+    lastVerified: '2026-01-02',
+    verificationPeriodDays: 30
+  }], now);
   assert.equal(readCachedSearch(cache, 'key', now + 1000).stale, false);
   assert.equal(readCachedSearch(cache, 'key', now + 2 * 86400000).stale, true);
 });
 
 test('offline behavior can reuse cached resources', () => {
-  const cache = writeCachedSearch({}, 'offline', [{ id: 'a', name: 'Saved' }], 100);
+  const cache = writeCachedSearch({}, 'offline', [{
+    id: 'a',
+    name: 'Saved',
+    lastVerified: '1970-01-01T00:00:00.100Z',
+    verificationPeriodDays: 30
+  }], 100);
   assert.equal(readCachedSearch(cache, 'offline', 200).resources[0].name, 'Saved');
+});
+
+test('expired resources are excluded rather than shown as saved fallback', () => {
+  const now = Date.UTC(2026, 6, 28);
+  const expired = { id: 'old', name: 'Old', lastVerified: '2025-01-01', verificationPeriodDays: 30 };
+  const current = { id: 'new', name: 'New', lastVerified: '2026-07-28', verificationPeriodDays: 30 };
+  assert.equal(resourceIsFresh(expired, now), false);
+  assert.deepEqual(freshResources([expired, current], now).map(resource => resource.id), ['new']);
+  const cache = writeCachedSearch({}, 'mixed', [expired, current], now);
+  const read = readCachedSearch(cache, 'mixed', now);
+  assert.deepEqual(read.resources.map(resource => resource.id), ['new']);
+  assert.equal(read.expiredCount, 1);
+  assert.equal(read.stale, false);
+});
+
+test('canonical coordinate cache keys make equivalent place labels deterministic', () => {
+  const point = { lat: 47.60621, lng: -122.33207 };
+  assert.equal(
+    coordinateCacheKey(point, 'food', 5),
+    coordinateCacheKey({ lat: 47.606209, lng: -122.332069 }, 'food', 5)
+  );
 });
 
 test('request coordination deduplicates concurrent external work', async () => {
@@ -687,6 +736,35 @@ test('background jobs record bounded retries and failures', () => {
   assert.equal(job.failures.length, 3);
 });
 
+test('background verification queues stale and incomplete food records first', () => {
+  const jobs = createVerificationJobs([
+    {
+      id: 'general',
+      category: 'legal',
+      lastVerified: '2024-01-01',
+      sourceUrls: ['https://example.org/general']
+    },
+    {
+      id: 'food',
+      category: 'food',
+      lastVerified: '2024-01-01',
+      sourceUrls: ['https://example.org/food'],
+      verificationPriority: 'high'
+    },
+    {
+      id: 'current',
+      category: 'health',
+      lastVerified: '2026-07-28',
+      hoursLastVerified: '2026-07-28',
+      eligibilityLastVerified: '2026-07-28',
+      sourceUrls: ['https://example.org/current']
+    }
+  ], new Date('2026-07-28T12:00:00Z'));
+  assert.deepEqual(jobs.map(job => job.payload.resourceId), ['food', 'general']);
+  assert.equal(jobs[0].priority, 'high');
+  assert.deepEqual(jobs[0].payload.checks, ['hours', 'eligibility', 'temporary-closure', 'special-events']);
+});
+
 test('critical UI copy and privacy constraints are present', async () => {
   const locale = await readFile(new URL('../js/localization.js', import.meta.url), 'utf8');
   assert.match(locale, /How are you using BridgeAid\?/);
@@ -873,6 +951,14 @@ test('local eligibility requires both a matching service area and official rules
   assert.equal(localProgramForResource(fixture, 'Tacoma').localEligibilityVerified, false);
 });
 
+test('local scope matching does not treat a shared state abbreviation as the same city', () => {
+  const austin = resources.find(resource => resource.id === 'central-texas-food-bank-onsite-pantry');
+  const cleveland = resources.find(resource => resource.id === 'houston-food-bank-trinity-river-crc');
+  assert.equal(servesLocation(austin, 'Austin, TX'), true);
+  assert.equal(servesLocation(cleveland, 'Austin, TX'), false);
+  assert.equal(servesLocation(cleveland, '77327'), true);
+});
+
 test('local eligibility asks only program-specific questions and explains results', () => {
   const fixture = {
     id: 'local-benefit',
@@ -906,7 +992,7 @@ test('Seattle utility screening applies the exact 2026 household-income table', 
   });
   assert.equal(eligible.status, 'Likely eligible');
   assert.equal(overLimit.status, 'Likely not eligible');
-  assert.equal(evaluateLocalEligibility(program, '10001', {}).status, 'Unable to determine');
+  assert.equal(evaluateLocalEligibility(program, '10001', {}).status, 'Eligibility information temporarily unavailable');
 });
 
 test('age-range eligibility supports exact program minimum and maximum ages', () => {
@@ -932,7 +1018,7 @@ test('generic national eligibility is not presented as confirmed local eligibili
     eligibilityRules: [{ field: 'age', operator: 'gte', value: 18 }],
     sourceUrls: ['https://official.example']
   }, '98101', { age: 30 });
-  assert.equal(result.status, 'Unable to determine');
+  assert.equal(result.status, 'Eligibility information temporarily unavailable');
 });
 
 test('registration guidance always provides a verified path or clear alternative', () => {
@@ -987,7 +1073,7 @@ test('missing schedule becomes uncertain only after source checks fail', async (
 });
 
 test('verified Seattle resources publish seven-day hours or an explicit not-listed state', () => {
-  const local = resources.filter(resource => resource.verified === '2026-07-28');
+  const local = resources.filter(resource => resource.city === 'Seattle' && resource.verified === '2026-07-28');
   assert.equal(local.length, 13);
   for (const resource of local) {
     assert.ok(resource.weeklyHours || resource.scheduleLabel === 'not_listed', resource.id);
@@ -999,11 +1085,34 @@ test('verified Seattle resources publish seven-day hours or an explicit not-list
 
 test('eligibility fallback uses the exact required disclosure in the interface', async () => {
   assert.equal(
-    LOCALES.en.eligibilityNotPubliclyListed,
-    'This program does not publicly list specific eligibility requirements. Contact the provider for confirmation.'
+    LOCALES.en.noEligibilityRequirementsExplanation,
+    'This provider does not publicly list specific eligibility restrictions. Contact the provider to confirm availability.'
   );
   const appSource = await readFile(new URL('../js/app.js', import.meta.url), 'utf8');
-  assert.match(appSource, /eligibilityNotPubliclyListed/);
+  assert.match(appSource, /noEligibilityRequirementsListed/);
+  assert.doesNotMatch(appSource, /function sourceBlock/);
+});
+
+test('nationwide online resources are separated from local results and carry actionable details', () => {
+  assert.ok(nationwideResources.length >= 10);
+  assert.ok(nationwideResources.every(resource => resource.scope === 'nationwide-online'));
+  assert.ok(nationwideResources.every(resource => resource.applicationSteps?.length >= 3));
+  assert.ok(nationwideResources.every(resource => resource.applicationMethods?.length));
+  assert.ok(nationwideResources.every(resource => resource.lastVerified));
+  assert.ok(resources.filter(resource => resource.scope === 'location').every(resource => !resource.onlineOnly));
+});
+
+test('verified food programs include distribution schedules and short re-verification periods', () => {
+  const foodBanks = resources.filter(resource => resource.verificationPriority === 'high');
+  assert.ok(foodBanks.length >= 4);
+  for (const resource of foodBanks) {
+    assert.equal(resource.scope, 'location');
+    assert.equal(resource.verificationPeriodDays, 30);
+    assert.ok(resource.hoursLastVerified);
+    assert.ok(resource.hoursSourceUrl?.startsWith('https://'));
+    assert.ok(resource.weeklyHours || resource.scheduleRules?.length);
+    assert.ok(resource.applicationSteps?.length >= 3);
+  }
 });
 
 test('search UI exposes one Call 211 action and does not warn when stored fallback exists', async () => {

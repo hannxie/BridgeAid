@@ -20,27 +20,54 @@ export function haversineMiles(lat1, lon1, lat2, lon2) {
 }
 
 export async function geocodeLocation(query, fetcher = fetch) {
-  const value = String(query || '').trim();
+  const value = String(query || '').normalize('NFKC').trim().replace(/\s+/g, ' ');
   if (!value) throw new Error('Enter a city, ZIP code, county, neighborhood, address, or landmark.');
   const cacheKey = value.toLowerCase();
   const useCache = fetcher === globalThis.fetch;
   if (useCache && geocodeCache.has(cacheKey)) return geocodeCache.get(cacheKey);
+  const coordinateMatch = value.match(/^(-?\d{1,2}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)$/);
+  if (coordinateMatch) {
+    const direct = { lat: Number(coordinateMatch[1]), lng: Number(coordinateMatch[2]), label: value };
+    if (direct.lat >= 18 && direct.lat <= 72 && direct.lng >= -180 && direct.lng <= -60) return direct;
+  }
   const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&countrycodes=us&limit=3&addressdetails=1&q=${encodeURIComponent(value)}`;
   const response = await fetcher(url, {
     headers: { Accept: 'application/json' },
     signal: timeoutSignal(5000)
   });
-  if (!response.ok) throw new Error('Location lookup failed. Try a ZIP code or nearby city.');
-  const choices = await response.json();
-  if (!choices.length) throw new Error('Location not found. Check the spelling or add a state.');
-  if (choices.length > 1 && choices[0].importance && choices[1].importance && Math.abs(choices[0].importance - choices[1].importance) < 0.02) {
-    const error = new Error('More than one location matched. Add a state or ZIP code.');
-    error.code = 'AMBIGUOUS_LOCATION';
-    error.choices = choices.slice(0, 3).map(c => c.display_name);
+  if (!response.ok) {
+    const error = new Error('Location lookup failed. Try a ZIP code or nearby city.');
+    error.code = 'LOCATION_LOOKUP_FAILED';
     throw error;
   }
-  const result = { lat: Number(choices[0].lat), lng: Number(choices[0].lon), label: choices[0].display_name };
-  if (useCache) geocodeCache.set(cacheKey, result);
+  const rawChoices = await response.json();
+  const choices = rawChoices.filter((choice, index, all) => {
+    const key = `${Number(choice.lat).toFixed(4)},${Number(choice.lon).toFixed(4)}`;
+    return all.findIndex(candidate =>
+      `${Number(candidate.lat).toFixed(4)},${Number(candidate.lon).toFixed(4)}` === key) === index;
+  });
+  if (!choices.length) {
+    const error = new Error('Location not found. Check the spelling or add a state.');
+    error.code = 'LOCATION_NOT_FOUND';
+    throw error;
+  }
+  const suggestions = choices.slice(0, 3).map(choice => ({
+    label: choice.display_name,
+    lat: Number(choice.lat),
+    lng: Number(choice.lon)
+  }));
+  const hasStateOrZip = /,\s*[a-z]{2}\b/i.test(value) || /\b\d{5}(?:-\d{4})?\b/.test(value);
+  if (!hasStateOrZip && choices.length > 1 && choices[0].importance && choices[1].importance && Math.abs(choices[0].importance - choices[1].importance) < 0.02) {
+    const error = new Error('More than one location matched. Add a state or ZIP code.');
+    error.code = 'AMBIGUOUS_LOCATION';
+    error.choices = suggestions;
+    throw error;
+  }
+  const result = suggestions[0];
+  if (useCache) {
+    geocodeCache.set(cacheKey, result);
+    geocodeCache.set(result.label.toLowerCase(), result);
+  }
   return result;
 }
 
@@ -80,6 +107,7 @@ export function normalizeOsmElement(element, origin) {
     id: `osm-${element.type}-${element.id}`,
     name: tags.name || tags.operator || 'Community service organization',
     category: inferCategory(tags),
+    scope: 'location',
     services: [inferCategory(tags)],
     lat,
     lng,
@@ -97,9 +125,11 @@ export function normalizeOsmElement(element, origin) {
     walkInStatus: tags.appointment === 'no' || tags.reservation === 'no' ? 'Walk-ins accepted' : '',
     accessibility: tags.wheelchair === 'yes' ? ['Wheelchair accessible'] : [],
     languages,
+    eligibilityStatus: 'temporarily_unavailable',
     verificationStatus: 'Community-sourced — confirm with organization',
     confidence: tags.website && tags.phone ? 0.7 : 0.45,
-    dateDiscovered: new Date().toISOString()
+    dateDiscovered: new Date().toISOString(),
+    verificationPeriodDays: 1
   };
 }
 

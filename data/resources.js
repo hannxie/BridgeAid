@@ -42,7 +42,7 @@ const WEEKDAYS = (open, close, overrides = {}) => ({
   ...overrides
 });
 
-export const resources = [
+const resourceRecords = [
   { id: '211', category: 'all', name: '211 Community Resource Line', description: { en: 'Local referrals for food, housing, utilities, healthcare, transportation, and crisis support.', zh: '提供食品、住房、水电、医疗、交通及危机支持的本地转介。', es: 'Referencias locales para alimentos, vivienda, servicios, salud, transporte y crisis.' }, phone: '211', url: 'https://www.211.org/', source: '211 / United Way', verified: '2026-07-27', hours: H.always, services: ['food', 'shelter', 'health', 'mental', 'benefits', 'transport', 'family'], eligibility: E.open, access: { en: 'Call 211 or search by ZIP code online.', zh: '拨打 211 或在网上按邮编搜索。', es: 'Llame al 211 o busque por código postal.' }, keywords: ['utility', 'rent', 'eviction', 'diapers', 'clothing', 'emergency'] },
   { id: 'findhelp', category: 'all', name: 'Findhelp', description: { en: 'Search free and reduced-cost programs by ZIP code across many service types.', zh: '按邮编搜索多种免费或低费用服务。', es: 'Busque programas gratuitos o de bajo costo por código postal.' }, url: 'https://www.findhelp.org/', source: 'Findhelp', verified: '2026-07-27', hours: H.online, services: ['food', 'shelter', 'health', 'mental', 'legal', 'benefits', 'jobs', 'transport', 'family'], eligibility: E.varies, access: { en: 'Enter a ZIP code, choose a service, then contact the provider.', zh: '输入邮编、选择服务并联系机构。', es: 'Ingrese un código postal, elija un servicio y contacte al proveedor.' }, keywords: ['free', 'low cost', 'local', 'case management'] },
   { id: 'hud', category: 'shelter', name: 'HUD Find Shelter', description: { en: 'Official locator for shelters, food pantries, health clinics, and clothing resources.', zh: '官方查找住所、食品站、诊所和衣物资源。', es: 'Buscador oficial de refugios, alimentos, clínicas y ropa.' }, url: 'https://www.hud.gov/findshelter', source: 'U.S. Department of Housing and Urban Development', verified: '2026-07-27', hours: H.online, services: ['shelter', 'food', 'health', 'family'], eligibility: E.varies, access: { en: 'Search by location and call the listed provider before traveling.', zh: '按地点搜索，并在前往前致电机构。', es: 'Busque por ubicación y llame antes de viajar.' }, keywords: ['homeless', 'evicted', 'clothing', 'housing'] },
@@ -811,8 +811,270 @@ export const resources = [
     verified: VERIFIED,
     freeStatus: 'Free; printing charges may apply',
     keywords: ['internet', 'wifi', 'computer', 'printing', 'technology', 'library']
+  },
+  {
+    id: 'food-bank-nyc-community-kitchen',
+    category: 'food',
+    services: ['food', 'family'],
+    organizationName: 'Food Bank For New York City',
+    programName: 'Community Kitchen and Food Pantry',
+    name: 'Food Bank For NYC Community Kitchen',
+    description: L('Free community meals, pantry groceries, older-adult lunches, and twice-monthly produce distributions in Harlem.'),
+    address: '252 West 116th Street, New York, NY 10026',
+    city: 'New York',
+    county: 'New York County',
+    state: 'NY',
+    zip: '10026',
+    phone: '212-566-7855',
+    url: 'https://www.foodbanknyc.org/find-food/community-kitchen/',
+    officialDomains: ['foodbanknyc.org'],
+    hours: L('Community meal Monday, Wednesday, and Friday 4:00–6:00 p.m.; older-adult lunch Monday–Friday in two seatings; produce market on the second and fourth Tuesday 10:00 a.m.–1:00 p.m.'),
+    weeklyHours: {
+      monday: PERIOD('16:00', '18:00'),
+      tuesday: [],
+      wednesday: PERIOD('16:00', '18:00'),
+      thursday: [],
+      friday: PERIOD('16:00', '18:00'),
+      saturday: [],
+      sunday: []
+    },
+    timeZone: 'America/New_York',
+    hoursNote: L('These weekly rows show community-meal service. Older-adult lunch has 12:00–1:00 p.m. and 1:00–2:00 p.m. seatings Monday–Friday.'),
+    specialHours: [
+      L('Free Farmers Market: second and fourth Tuesday of each month, 10:00 a.m.–1:00 p.m.; reservations are offered through Plentiful.'),
+      L('Pantry groceries use a reservation system. Check the provider page for the current reservation instructions.')
+    ],
+    holidayHours: [
+      { label: L('The provider publishes annual major-holiday closures; check the current provider notice before visiting.') }
+    ],
+    scheduleRules: [{ frequency: 'monthly', ordinal: [2, 4], weekday: 'tuesday', open: '10:00', close: '13:00', service: 'Free Farmers Market' }],
+    scheduleLabel: 'published',
+    scheduleVerificationStatus: 'verified',
+    hoursSourceUrl: 'https://www.foodbanknyc.org/find-food/community-kitchen/',
+    hoursLastVerified: VERIFIED,
+    eligibilitySummary: L('Community meals and food assistance are available to New Yorkers. The provider does not list general income restrictions; the older-adult lunch has an age-specific intake process.'),
+    eligibilityStatus: 'no_restrictions_listed',
+    eligibilityDetails: {
+      whoQualifies: L('New Yorkers seeking food assistance; the older-adult lunch is a separate age-specific service.'),
+      importantExceptions: L('A photo ID showing date of birth is listed for older-adult lunch enrollment.')
+    },
+    eligibilitySourceUrl: 'https://www.foodbanknyc.org/find-food/community-kitchen/',
+    eligibilityLastVerified: VERIFIED,
+    requiredDocuments: [L('No document is publicly listed for the general community meal; photo ID with date of birth is listed for older-adult lunch enrollment.')],
+    serviceAreas: ['New York City', 'New York', 'Harlem', 'Manhattan'],
+    serviceAreaZipPrefixes: ['100'],
+    access: L('Walk in for the community meal. Use the provider’s current reservation instructions for pantry groceries or the produce market.'),
+    appointmentRequirement: L('Community meals are walk-in; pantry groceries and the produce market use reservations.'),
+    applicationMethods: ['online', 'inPerson'],
+    applicationLinks: [{ type: 'appointment', url: 'https://www.foodbanknyc.org/find-food/community-kitchen/', label: L('Review current food-service and reservation details') }],
+    applicationSteps: [L('Choose the meal, pantry, older-adult lunch, or produce service you need.'), L('Check the service-specific schedule and reservation requirement.'), L('Bring photo ID only when enrolling for the older-adult lunch.')],
+    applicationLastVerified: VERIFIED,
+    source: 'Food Bank For New York City',
+    sourceUrls: ['https://www.foodbanknyc.org/find-food/community-kitchen/'],
+    verified: VERIFIED,
+    verificationPeriodDays: 30,
+    verificationPriority: 'high',
+    keywords: ['food bank', 'community meal', 'pantry', 'produce', 'Harlem']
+  },
+  {
+    id: 'houston-food-bank-trinity-river-crc',
+    category: 'food',
+    services: ['food', 'benefits', 'family'],
+    organizationName: 'Houston Food Bank',
+    programName: 'Trinity River Community Resource Center',
+    name: 'Trinity River Community Resource Center',
+    description: L('A free neighbor-choice market plus benefit-application support for residents in the Trinity River service area.'),
+    address: '1768 County Road 3558, Cleveland, TX 77327',
+    city: 'Cleveland',
+    county: 'Liberty County',
+    state: 'TX',
+    zip: '77327',
+    url: 'https://www.houstonfoodbank.org/trinity-river-community-resource-center/',
+    officialDomains: ['houstonfoodbank.org'],
+    hours: L('Food For Change distribution by appointment Wednesday and Friday 9:00 a.m.–5:00 p.m.; TEFAP distribution by appointment Thursday 9:00 a.m.–12:00 p.m.'),
+    weeklyHours: {
+      monday: [],
+      tuesday: [],
+      wednesday: PERIOD('09:00', '17:00'),
+      thursday: PERIOD('09:00', '12:00'),
+      friday: PERIOD('09:00', '17:00'),
+      saturday: [],
+      sunday: []
+    },
+    timeZone: 'America/Chicago',
+    hoursNote: L('Monday, Tuesday, and Saturday are listed as closed. Wednesday and Friday are Food For Change; Thursday is TEFAP.'),
+    scheduleLabel: 'published',
+    scheduleVerificationStatus: 'verified',
+    hoursSourceUrl: 'https://www.houstonfoodbank.org/trinity-river-community-resource-center/',
+    hoursLastVerified: VERIFIED,
+    appointmentOnly: true,
+    eligibilitySummary: L('The provider does not publicly list one set of restrictions for all market and benefit services. Program-specific rules may apply.'),
+    eligibilityStatus: 'no_restrictions_listed',
+    eligibilityDetails: {
+      geographicRestrictions: L('The center supports Liberty, Trinity, San Jacinto, and Walker counties.'),
+      importantExceptions: L('Food For Change and TEFAP may follow different program rules.')
+    },
+    eligibilitySourceUrl: 'https://www.houstonfoodbank.org/trinity-river-community-resource-center/',
+    eligibilityLastVerified: VERIFIED,
+    serviceAreas: ['Liberty County', 'Trinity County', 'San Jacinto County', 'Walker County', 'Cleveland'],
+    serviceAreaZipPrefixes: ['773'],
+    access: L('Make an appointment for the published distribution day that matches the program.'),
+    appointmentRequirement: L('Appointment required for the listed Food For Change and TEFAP distributions.'),
+    applicationMethods: ['online', 'appointment'],
+    applicationLinks: [{ type: 'appointment', url: 'https://www.houstonfoodbank.org/trinity-river-community-resource-center/', label: L('Review appointment and program details') }],
+    applicationSteps: [L('Review which distribution program fits your need.'), L('Use the provider page to arrange the required appointment.'), L('Confirm program-specific eligibility or documents when scheduling.')],
+    applicationLastVerified: VERIFIED,
+    source: 'Houston Food Bank',
+    sourceUrls: ['https://www.houstonfoodbank.org/trinity-river-community-resource-center/'],
+    verified: VERIFIED,
+    verificationPeriodDays: 30,
+    verificationPriority: 'high',
+    keywords: ['food bank', 'neighbor choice', 'TEFAP', 'SNAP help', 'Cleveland Texas']
+  },
+  {
+    id: 'central-texas-food-bank-onsite-pantry',
+    category: 'food',
+    services: ['food', 'family'],
+    organizationName: 'Central Texas Food Bank',
+    programName: 'Onsite Emergency Food Pantry',
+    name: 'Central Texas Food Bank Onsite Pantry',
+    description: L('An onsite pantry offering free fresh and shelf-stable food in a neighbor-choice shopping setting.'),
+    address: '6500 Metropolis Drive, Austin, TX 78744',
+    city: 'Austin',
+    county: 'Travis County',
+    state: 'TX',
+    zip: '78744',
+    phone: '512-282-2111',
+    url: 'https://www.centraltexasfoodbank.org/news/food-bank-celebrates-launch-new-onsite-emergency-food-pantry',
+    officialDomains: ['centraltexasfoodbank.org'],
+    hours: L('Monday–Friday, 9:00 a.m.–4:30 p.m.'),
+    weeklyHours: WEEKDAYS('09:00', '16:30'),
+    timeZone: 'America/Chicago',
+    scheduleLabel: 'published',
+    scheduleVerificationStatus: 'verified',
+    hoursSourceUrl: 'https://www.centraltexasfoodbank.org/news/food-bank-celebrates-launch-new-onsite-emergency-food-pantry',
+    hoursLastVerified: VERIFIED,
+    holidayHours: [{ label: L('Holiday and temporary closures are not listed on the pantry announcement; confirm before a holiday visit.') }],
+    eligibilitySummary: L('The pantry serves Central Texans seeking emergency food. The provider does not publish specific income restrictions on the pantry announcement.'),
+    eligibilityStatus: 'no_restrictions_listed',
+    eligibilitySourceUrl: 'https://www.centraltexasfoodbank.org/news/food-bank-celebrates-launch-new-onsite-emergency-food-pantry',
+    eligibilityLastVerified: VERIFIED,
+    serviceAreas: ['Austin', 'Travis County', 'Central Texas'],
+    serviceAreaZipPrefixes: ['787'],
+    access: L('Visit the south Austin campus during the published pantry hours. Call before visiting on a holiday.'),
+    appointmentRequirement: L('No appointment requirement is publicly listed on the pantry announcement.'),
+    applicationMethods: ['inPerson'],
+    applicationLinks: [{ type: 'contact', url: 'https://www.centraltexasfoodbank.org/find-food-now', label: L('Check current pantry and distribution details') }],
+    applicationSteps: [L('Check the current provider listing before traveling.'), L('Visit the south Austin campus during published pantry hours.'), L('Ask onsite staff about any current intake or visit-frequency rules.')],
+    applicationLastVerified: VERIFIED,
+    source: 'Central Texas Food Bank',
+    sourceUrls: ['https://www.centraltexasfoodbank.org/news/food-bank-celebrates-launch-new-onsite-emergency-food-pantry', 'https://www.centraltexasfoodbank.org/find-food-now'],
+    verified: VERIFIED,
+    verificationPeriodDays: 30,
+    verificationPriority: 'high',
+    keywords: ['food bank', 'emergency pantry', 'groceries', 'Austin']
+  },
+  {
+    id: 'food-bank-ccs-davis-park-produce',
+    category: 'food',
+    services: ['food', 'family'],
+    organizationName: 'Food Bank of Contra Costa and Solano',
+    programName: 'Community Produce Program at Davis Park',
+    name: 'Davis Park Community Produce Distribution',
+    description: L('A twice-monthly distribution where families and individuals can pick up free fresh produce.'),
+    address: '1651 Folsom Avenue, San Pablo, CA 94806',
+    city: 'San Pablo',
+    county: 'Contra Costa County',
+    state: 'CA',
+    zip: '94806',
+    phone: '510-815-5651',
+    url: 'https://www.foodbankccs.org/map-city/san-pablo/',
+    officialDomains: ['foodbankccs.org'],
+    hours: L('Second and fourth Friday of each month, 11:30 a.m.–12:30 p.m.'),
+    weeklyHours: null,
+    timeZone: 'America/Los_Angeles',
+    hoursNote: L('This is a recurring distribution event, not a weekly pantry schedule.'),
+    specialHours: [L('Bring two bags with handles. Choose one Community Produce Program location.')],
+    holidayHours: [{ label: L('The provider lists date-specific holiday closures on its city page; check the current listing before visiting.') }],
+    scheduleRules: [{ frequency: 'monthly', ordinal: [2, 4], weekday: 'friday', open: '11:30', close: '12:30' }],
+    scheduleLabel: 'event',
+    scheduleVerificationStatus: 'verified',
+    hoursSourceUrl: 'https://www.foodbankccs.org/map-city/san-pablo/',
+    hoursLastVerified: VERIFIED,
+    eligibilitySummary: L('Families and individuals may receive free produce. The provider does not list income or ID restrictions for this distribution.'),
+    eligibilityStatus: 'no_restrictions_listed',
+    eligibilitySourceUrl: 'https://www.foodbankccs.org/map-city/san-pablo/',
+    eligibilityLastVerified: VERIFIED,
+    serviceAreas: ['San Pablo', 'Contra Costa County'],
+    serviceAreaZipPrefixes: ['948'],
+    noIdRequired: true,
+    access: L('Arrive during the second- or fourth-Friday distribution and bring two handled bags.'),
+    appointmentRequirement: L('No appointment requirement is publicly listed for this distribution.'),
+    applicationMethods: ['inPerson'],
+    applicationLinks: [{ type: 'contact', url: 'https://www.foodbankccs.org/map-city/san-pablo/', label: L('Check the current distribution listing') }],
+    applicationSteps: [L('Confirm that the date is the second or fourth Friday of the month.'), L('Check the provider page for a holiday closure.'), L('Bring two bags with handles and arrive during the one-hour distribution window.')],
+    applicationLastVerified: VERIFIED,
+    source: 'Food Bank of Contra Costa and Solano',
+    sourceUrls: ['https://www.foodbankccs.org/map-city/san-pablo/'],
+    verified: VERIFIED,
+    verificationPeriodDays: 30,
+    verificationPriority: 'high',
+    keywords: ['food bank', 'produce', 'distribution', 'San Pablo']
   }
 ];
+
+const NATIONWIDE_IDS = new Set([
+  '211', 'findhelp', 'hud', 'feeding-america', 'usda-hunger', 'hrsa', 'samhsa',
+  'lawhelp', 'benefit-finder', 'snap', 'job-centers', 'community-action',
+  'salvation-army', 'catholic-charities'
+]);
+
+const OPEN_NATIONWIDE = new Set(['211', 'usda-hunger', 'samhsa', 'job-centers']);
+const LOCAL_PROVIDER_REQUIRED = new Set([
+  'hud', 'feeding-america', 'hrsa', 'lawhelp', 'snap', 'job-centers',
+  'community-action', 'salvation-army', 'catholic-charities'
+]);
+
+export const resources = resourceRecords.map(resource => {
+  if (!NATIONWIDE_IDS.has(String(resource.id))) {
+    return { scope: 'location', verificationPeriodDays: resource.verificationPeriodDays || 90, ...resource };
+  }
+  const eligibilityStatus = OPEN_NATIONWIDE.has(String(resource.id)) ? 'open' : 'varies';
+  const requiresLocalProvider = LOCAL_PROVIDER_REQUIRED.has(String(resource.id));
+  const onlineOnly = !['211', 'usda-hunger', 'samhsa'].includes(String(resource.id));
+  const applicationMethods = [
+    ...(resource.phone ? ['phone'] : []),
+    ...(resource.url ? ['online'] : []),
+    ...(requiresLocalProvider ? ['localProvider'] : [])
+  ];
+  return {
+    ...resource,
+    scope: 'nationwide-online',
+    onlineOnly,
+    requiresLocalProvider,
+    serviceOffered: resource.description,
+    whoItHelps: resource.eligibility,
+    eligibilitySummary: resource.eligibility,
+    eligibilityStatus,
+    applicationMethods,
+    requiredDocuments: requiresLocalProvider
+      ? [L('Document requirements are set by the program or local provider shown after you search.')]
+      : [L('No document is required to search or request information.')],
+    applicationLinks: resource.url
+      ? [{ type: requiresLocalProvider ? 'questionnaire' : 'application', url: resource.url, label: L(requiresLocalProvider ? 'Find the official local program' : 'Open the official resource') }]
+      : [],
+    applicationSteps: requiresLocalProvider
+      ? [L('Open the official locator.'), L('Enter your state, ZIP code, or address.'), L('Choose a local provider and review its current eligibility, documents, and hours before applying.')]
+      : [L('Open the official resource or call the published number.'), L('Provide only the information needed to receive referrals or use the screening tool.'), L('Follow the official next-step links for any program you choose.')],
+    applicationLastVerified: VERIFIED,
+    eligibilityLastVerified: VERIFIED,
+    lastVerified: VERIFIED,
+    verified: VERIFIED,
+    verificationPeriodDays: 90
+  };
+});
+
+export const nationwideResources = resources.filter(resource => resource.scope === 'nationwide-online');
 
 export const keywordMap = {
   food: ['food', 'hungry', 'hunger', 'meal', 'pantry', 'groceries', 'eat', 'comida', 'alimento', 'hambre', '食品', '食物', '饿', '吃饭'],

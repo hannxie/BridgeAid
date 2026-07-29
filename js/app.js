@@ -1,5 +1,10 @@
-import { categories as legacyCategories, keywordMap, resources as sourceResources } from '../data/resources.js';
-import { translate, detectMessageLanguage, requestedLanguage } from './localization.js';
+import {
+  categories as legacyCategories,
+  keywordMap,
+  resources as sourceResources,
+  nationwideResources
+} from '../data/resources.js?v=10';
+import { translate, detectMessageLanguage, requestedLanguage } from './localization.js?v=10';
 import {
   safeStorageGet,
   safeStorageSet,
@@ -13,16 +18,19 @@ import {
   filterResources,
   rankResources,
   cacheKey,
+  coordinateCacheKey,
   readCachedSearch,
   writeCachedSearch,
   mergeDuplicates,
-  sortResources
-} from './services/resource-service.js';
+  sortResources,
+  resourceIsFresh,
+  freshResources
+} from './services/resource-service.js?v=10';
 import {
   geocodeLocation,
   fetchNearbyResources,
   geocodeResourceAddresses
-} from './services/location-service.js';
+} from './services/location-service.js?v=10';
 import {
   formatScheduleTime,
   resourceScheduleState,
@@ -42,13 +50,13 @@ import {
   localEligibilityQuestions,
   evaluateLocalEligibility,
   servesLocation
-} from './services/local-eligibility-service.js';
+} from './services/local-eligibility-service.js?v=10';
 import { registrationGuidance } from './services/registration-service.js';
 import {
   answerGroundedAssistant,
   assistantCategory,
   locationFromMessage
-} from './services/grounded-assistant.js';
+} from './services/grounded-assistant.js?v=10';
 import {
   createCorrectionReport,
   queueCorrection,
@@ -143,6 +151,11 @@ const state = {
     language: '',
     verifiedEligibility: false
   },
+  onlineFilters: {
+    category: 'all',
+    eligibility: 'all',
+    applicationMethod: 'all'
+  },
   saved: new Set(safeArray(STORAGE.saved)),
   liveResults: [],
   storedResults: sourceResources,
@@ -151,6 +164,7 @@ const state = {
   loading: false,
   errorKey: '',
   errorText: '',
+  locationSuggestions: [],
   noticeKey: '',
   offline: !navigator.onLine,
   storageWarning: false,
@@ -275,6 +289,8 @@ function staticMatches() {
     : detectCategories(state.otherNeed);
   let rows = state.storedResults
     .filter(resource => String(resource.id) !== '211')
+    .filter(resource => resource.scope !== 'nationwide-online')
+    .filter(resource => resourceIsFresh(resource))
     .map(resource => normalizeResource(resource, state.lang));
   rows = rows.filter(resource => {
     const original = state.storedResults.find(item => String(item.id) === resource.id);
@@ -353,6 +369,7 @@ function header() {
       <div class="nav-links" id="navLinks">
         <button data-page="home">${tr('navHome')}</button>
         <button data-page="find">${tr('navFind')}</button>
+        <button data-page="nationwide">${tr('navNationwide')}</button>
         <button data-page="eligibility">${tr('navEligibility')}</button>
         <button data-page="saved">${tr('navSaved')} (${state.saved.size})</button>
         <button data-page="privacy">${tr('navPrivacy')}</button>
@@ -389,6 +406,10 @@ function statusMessages() {
     ${state.storageWarning ? `<div class="error-state">${tr('storageBlocked')}</div>` : ''}
     ${state.errorKey ? `<div class="error-state">${tr(state.errorKey)}${state.errorKey === 'searchUnavailable' ? ` <button class="ghost retry-search" data-retry-search>${tr('retrySearch')}</button>` : ''}</div>` : ''}
     ${state.errorText ? `<div class="error-state">${esc(state.errorText)}</div>` : ''}
+    ${state.locationSuggestions.length ? `<div class="location-suggestions">
+      <strong>${tr('locationSuggestions')}</strong>
+      <div>${state.locationSuggestions.map(choice => `<button class="ghost" data-location-suggestion="${attr(choice.label)}" data-lat="${attr(choice.lat)}" data-lng="${attr(choice.lng)}">${esc(choice.label)}</button>`).join('')}</div>
+    </div>` : ''}
   </div>`;
 }
 
@@ -572,7 +593,6 @@ function availabilityText(resource) {
 function weeklyHoursBlock(resource) {
   const rows = weeklyScheduleRows(resource, state.lang);
   const hasKnownRows = rows.some(row => row.known);
-  const source = safeUrl(resource.hoursSourceUrl || resource.scheduleSourceUrl);
   const exceptions = (resource.holidayHours || []).filter(exception => exception.date);
   const unknownScheduleLabel = resource.appointmentOnly
     ? tr('appointmentOnly')
@@ -596,7 +616,6 @@ function weeklyHoursBlock(resource) {
     ${resource.specialHours.length ? `<div class="special-hours"><strong>${tr('specialHours')}</strong><ul>${resource.specialHours.map(item => `<li>${esc(item)}</li>`).join('')}</ul></div>` : ''}
     ${exceptions.length ? `<details class="holiday-hours"><summary>${tr('holidayHours')}</summary><ul>${exceptions.map(item => `<li>${esc(item.date)} — ${esc(item.label || (item.closed ? tr('closed') : tr('specialHours')))}</li>`).join('')}</ul></details>` : ''}
     <div class="hours-evidence">
-      ${source ? `<a href="${attr(source)}" target="_blank" rel="noopener noreferrer">${tr('hoursSource')} ↗</a>` : ''}
       ${resource.hoursLastVerified ? `<span>${tr('lastVerified')}: ${esc(resource.hoursLastVerified)}</span>` : ''}
     </div>
   </div>`;
@@ -622,21 +641,6 @@ function walkingDetails(resource) {
     distance: distanceDisplay(resource.distance),
     minutes
   });
-}
-
-function sourceBlock(resource) {
-  const links = resource.sourceUrls
-    .map(safeUrl)
-    .filter(Boolean)
-    .map((url, index) => `<a href="${attr(url)}" target="_blank" rel="noopener noreferrer">${tr('sourceNumber', { number: index + 1 })}</a>`)
-    .join(' · ');
-  return `<div class="source-details">
-    <span><strong>${tr('sources')}:</strong> ${esc(resource.source)}</span>
-    ${resource.lastVerified ? `<span><strong>${tr('lastVerified')}:</strong> ${esc(resource.lastVerified)}</span>` : ''}
-    <span><strong>${tr('verification')}:</strong> ${verificationText(resource)}</span>
-    ${links ? `<span>${links}</span>` : ''}
-    ${resource.conflicts.length ? `<span class="conflict"><strong>${tr('conflictingInfo')}:</strong> ${esc(resource.conflicts.join(' · '))}</span>` : ''}
-  </div>`;
 }
 
 function resourceCard(raw, options = {}) {
@@ -672,13 +676,14 @@ function resourceCard(raw, options = {}) {
       ${walkingDetails(resource) ? `<dt>${tr('distance')}</dt><dd>${esc(walkingDetails(resource))}</dd>` : ''}
       <dt>${tr('hours')}</dt><dd>${weeklyHoursBlock(resource)}</dd>
       <dt>${tr('availability')}</dt><dd>${availabilityText(resource)}</dd>
-      <dt>${tr('eligibilitySummary')}</dt><dd>${esc(localProgram?.localEligibilityVerified ? localProgram.eligibilitySummary : tr('eligibilityLocalUnknown'))}</dd>
+      <dt>${tr('eligibilitySummary')}</dt><dd>${esc(localProgram?.localEligibilityVerified
+        ? localProgram.eligibilitySummary
+        : ['no_restrictions_listed', 'open'].includes(localProgram?.eligibilityStatus)
+          ? localProgram.eligibilitySummary || tr('noEligibilityRequirementsExplanation')
+          : tr('eligibilityTemporarilyUnavailable'))}</dd>
       <dt>${tr('registrationRequirement')}</dt><dd>${esc(resource.registrationRequirement || tr('registrationUseContact'))}</dd>
     </dl>
-    <details class="fact-details"><summary>${tr('sources')}</summary>
-      ${sourceBlock(resource)}
-      <p class="ai-label"><strong>${tr('aiSummary')}:</strong> ${esc(resource.description || tr('unknown'))} ${tr('confirmOrganization')}</p>
-    </details>
+    <p class="verification-line"><strong>${tr('lastVerified')}:</strong> ${esc(resource.lastVerified || resource.hoursLastVerified || tr('nonePublished'))} · ${esc(verificationText(resource))}</p>
     <div class="card-actions action-priority">
       ${resource.phone ? `<a class="primary" href="tel:${attr(phoneHref(resource.phone))}">☎ ${tr('call')}</a>` : ''}
       <a class="secondary" href="${attr(directionsUrl(resource, 'walking'))}" target="_blank" rel="noopener noreferrer">⌖ ${tr('walkingDirections')}</a>
@@ -704,13 +709,13 @@ function comparisonPanel(resources) {
   return `<section class="comparison-panel" aria-labelledby="comparison-title">
     <div class="section-head"><h2 id="comparison-title">${tr('comparison')}</h2><button class="text-btn" data-clear-compare>${tr('clearComparison')}</button></div>
     <div class="comparison-scroll"><table>
-      <thead><tr><th>${tr('compareResource')}</th><th>${tr('hours')}</th><th>${tr('compareEligibility')}</th><th>${tr('distance')}</th><th>${tr('compareSource')}</th></tr></thead>
+      <thead><tr><th>${tr('compareResource')}</th><th>${tr('hours')}</th><th>${tr('compareEligibility')}</th><th>${tr('distance')}</th><th>${tr('lastVerified')}</th></tr></thead>
       <tbody>${selected.map(resource => `<tr>
         <th>${esc(resource.name)}</th>
         <td>${esc(resource.hours || tr('scheduleUncertain'))}</td>
-        <td>${esc(localProgramForResource(resource, state.location)?.localEligibilityVerified ? resource.eligibilitySummary : tr('eligibilityLocalUnknown'))}</td>
+        <td>${esc(localProgramForResource(resource, state.location)?.localEligibilityVerified ? resource.eligibilitySummary : tr('eligibilityTemporarilyUnavailable'))}</td>
         <td>${esc(walkingDetails(resource) || tr('unknown'))}</td>
-        <td>${esc(resource.source)}</td>
+        <td>${esc(resource.lastVerified || resource.hoursLastVerified || tr('nonePublished'))}</td>
       </tr>`).join('')}</tbody>
     </table></div>
   </section>`;
@@ -801,6 +806,87 @@ function planItem(item) {
   </article>`;
 }
 
+function nationwideCard(raw) {
+  const resource = normalizeResource(raw, state.lang);
+  const primaryLink = resource.applicationLinks[0];
+  const website = safeUrl(primaryLink?.url || resource.officialWebsite || resource.website);
+  const eligibilityLabel = resource.requiresLocalProvider
+    ? tr('onlineEligibilityLocalProvider')
+    : resource.eligibilityStatus === 'open'
+      ? tr('onlineEligibilityOpen')
+      : tr('onlineEligibilityVaries');
+  return `<article class="resource-card nationwide-card" data-resource-card="${attr(resource.id)}">
+    <div class="card-top">
+      <span class="tag">${categoryIcon(resource.category)} ${categoryLabel(resource.category)}</span>
+      <span class="verification-badge confirmed"><span aria-hidden="true">✓</span>${tr('nationwideAccess')}</span>
+    </div>
+    <div><h2>${esc(resource.name)}</h2></div>
+    <p class="description">${esc(resource.serviceOffered || resource.description)}</p>
+    <dl class="resource-meta">
+      <dt>${tr('whoItHelps')}</dt><dd>${esc(resource.whoItHelps || resource.eligibilitySummary)}</dd>
+      <dt>${tr('eligibilitySummary')}</dt><dd>${esc(eligibilityLabel)}</dd>
+      <dt>${tr('waysToApply')}</dt><dd>${esc(applicationMethods(resource.applicationMethods) || tr('confirmOrganization'))}</dd>
+      <dt>${tr('documents')}</dt><dd>${resource.requiredDocuments.length
+        ? `<ul>${resource.requiredDocuments.map(item => `<li>${esc(item)}</li>`).join('')}</ul>`
+        : esc(tr('nonePublished'))}</dd>
+    </dl>
+    ${resource.requiresLocalProvider ? `<p class="local-provider-note">${tr('localProviderExplanation')}</p>` : ''}
+    ${resource.applicationSteps.length ? `<details class="online-steps"><summary>${tr('applicationProcess')}</summary><ol>${resource.applicationSteps.map(step => `<li>${esc(step)}</li>`).join('')}</ol></details>` : ''}
+    <p class="verification-line"><strong>${tr('lastVerified')}:</strong> ${esc(resource.lastVerified || resource.applicationLastVerified)}</p>
+    <div class="card-actions action-priority">
+      ${resource.phone ? `<a class="primary" href="tel:${attr(phoneHref(resource.phone))}">☎ ${tr('call')}</a>` : ''}
+      ${website ? `<a class="${resource.phone ? 'secondary' : 'primary'}" href="${attr(website)}" target="_blank" rel="noopener noreferrer">${esc(primaryLink?.label || tr('openOfficialResource'))} ↗</a>` : ''}
+      <button class="ghost" data-save="${attr(resource.id)}" aria-pressed="${state.saved.has(resource.id)}">${state.saved.has(resource.id) ? `★ ${tr('savedAction')}` : `☆ ${tr('save')}`}</button>
+    </div>
+  </article>`;
+}
+
+function nationwidePage() {
+  const normalized = nationwideResources.map(resource => normalizeResource(resource, state.lang));
+  const categoriesAvailable = [...new Set(normalized
+    .map(resource => resource.category)
+    .filter(category => category !== 'all'))].sort();
+  const filtered = normalized
+    .filter(resource => state.onlineFilters.category === 'all'
+      || resource.category === state.onlineFilters.category
+      || resource.services.includes(state.onlineFilters.category))
+    .filter(resource => {
+      if (state.onlineFilters.eligibility === 'all') return true;
+      if (state.onlineFilters.eligibility === 'localProvider') return resource.requiresLocalProvider;
+      return resource.eligibilityStatus === state.onlineFilters.eligibility;
+    })
+    .filter(resource => state.onlineFilters.applicationMethod === 'all'
+      || resource.applicationMethods.includes(state.onlineFilters.applicationMethod))
+    .sort((a, b) => a.name.localeCompare(b.name, state.lang, { sensitivity: 'base' }));
+  return `<main id="main" class="wrap section page nationwide-page">
+    <span class="eyebrow">${tr('nationwideEyebrow')}</span>
+    <h1>${tr('nationwideTitle')}</h1>
+    <p class="lead">${tr('nationwideIntro')}</p>
+    <section class="online-filters" aria-label="${attr(tr('nationwideFilters'))}">
+      <label><span>${tr('category')}</span><select data-online-filter="category">
+        <option value="all">${tr('categoryAll')}</option>
+        ${categoriesAvailable.map(category => `<option value="${attr(category)}" ${state.onlineFilters.category === category ? 'selected' : ''}>${categoryLabel(category)}</option>`).join('')}
+      </select></label>
+      <label><span>${tr('onlineEligibilityFilter')}</span><select data-online-filter="eligibility">
+        <option value="all">${tr('filterAll')}</option>
+        <option value="open" ${state.onlineFilters.eligibility === 'open' ? 'selected' : ''}>${tr('onlineEligibilityOpen')}</option>
+        <option value="varies" ${state.onlineFilters.eligibility === 'varies' ? 'selected' : ''}>${tr('onlineEligibilityVaries')}</option>
+        <option value="localProvider" ${state.onlineFilters.eligibility === 'localProvider' ? 'selected' : ''}>${tr('onlineEligibilityLocalProvider')}</option>
+      </select></label>
+      <label><span>${tr('applicationMethodFilter')}</span><select data-online-filter="applicationMethod">
+        <option value="all">${tr('filterAll')}</option>
+        <option value="online" ${state.onlineFilters.applicationMethod === 'online' ? 'selected' : ''}>${tr('applyOnline')}</option>
+        <option value="phone" ${state.onlineFilters.applicationMethod === 'phone' ? 'selected' : ''}>${tr('applyByPhone')}</option>
+        <option value="localProvider" ${state.onlineFilters.applicationMethod === 'localProvider' ? 'selected' : ''}>${tr('applyThroughLocalProvider')}</option>
+      </select></label>
+    </section>
+    <p class="results-summary">${tr('resultsCount', { count: filtered.length })}</p>
+    <div class="resource-list nationwide-list">${filtered.length
+      ? filtered.map(nationwideCard).join('')
+      : `<div class="empty-state">${tr('noOnlineResults')}</div>`}</div>
+  </main>`;
+}
+
 function savedPage() {
   const available = mergeDuplicates([...state.liveResults, ...sourceResources])
     .filter(resource => String(resource.id) !== '211')
@@ -808,7 +894,8 @@ function savedPage() {
   const saved = available.filter(resource => state.saved.has(resource.id));
   return `<main id="main" class="wrap section page">
     <div class="page-head"><h1>${tr('savedTitle')}</h1></div>
-    <div class="resource-list">${saved.length ? saved.map(resource => resourceCard(resource)).join('') : `<div class="empty-state">${tr('savedEmpty')}</div>`}</div>
+    <div class="resource-list">${saved.length ? saved.map(resource =>
+      resource.scope === 'nationwide-online' ? nationwideCard(resource) : resourceCard(resource)).join('') : `<div class="empty-state">${tr('savedEmpty')}</div>`}</div>
   </main>`;
 }
 
@@ -896,7 +983,9 @@ function eligibilityField(question, answer) {
 function eligibilityPage() {
   const resources = state.searched
     ? allResults()
-    : sourceResources.map(resource => normalizeResource(resource, state.lang));
+    : freshResources(sourceResources
+      .filter(resource => resource.scope !== 'nationwide-online'))
+      .map(resource => normalizeResource(resource, state.lang));
   const selected = resourceById(state.eligibility.resourceId);
   const questions = selected
     ? localEligibilityQuestions(selected, state.eligibility.location, state.eligibility.answers)
@@ -948,8 +1037,9 @@ function statusTranslation(status) {
     'Likely eligible': 'likelyEligible',
     'Possibly eligible': 'possiblyEligible',
     'Likely not eligible': 'likelyNotEligible',
-    'Unable to determine': 'unableDetermine'
-  }[status] || 'unableDetermine';
+    'No eligibility requirements listed': 'noEligibilityRequirementsListed',
+    'Eligibility information temporarily unavailable': 'eligibilityTemporarilyUnavailable'
+  }[status] || 'eligibilityTemporarilyUnavailable';
 }
 
 const ELIGIBILITY_DETAIL_KEYS = {
@@ -998,19 +1088,24 @@ function applicationMethods(methods = []) {
     mail: 'applyByMail',
     email: 'applyByEmail',
     fax: 'applyByFax',
-    inPerson: 'applyInPerson'
+    inPerson: 'applyInPerson',
+    appointment: 'scheduleAppointment',
+    localProvider: 'applyThroughLocalProvider'
   };
   return methods.map(method => tr(keys[method] || 'confirmOrganization')).join(' · ');
 }
 
 function eligibilityResult(result, resource) {
   if (!result) return '';
-  const source = safeUrl(result.program?.eligibilitySourceUrl || resource.sourceUrls[0]);
-  const noPublishedRules = result.status === 'Unable to determine'
-    && result.missing?.some(item => String(item).includes('eligibility rules'));
+  const noPublishedRules = result.status === 'No eligibility requirements listed';
+  const temporarilyUnavailable = result.status === 'Eligibility information temporarily unavailable';
   return `<section class="eligibility-result" aria-live="polite">
     <h2>${tr(statusTranslation(result.status))}</h2>
-    <p>${noPublishedRules ? tr('eligibilityNotPubliclyListed') : result.status === 'Unable to determine' ? tr('noLocalRules') : tr('nearbyRulesDiffer')}</p>
+    <p>${noPublishedRules
+      ? tr('noEligibilityRequirementsExplanation')
+      : temporarilyUnavailable
+        ? tr('eligibilityTemporarilyUnavailableExplanation')
+        : tr('nearbyRulesDiffer')}</p>
     ${result.program?.localEligibilityVerified ? eligibilityDetailsBlock(resource) : ''}
     ${result.passed?.length ? `<h3>${tr('satisfied')}</h3><ul>${result.passed.map(item => `<li>${tr('requirementMet', { requirement: tr(eligibilityFieldKey(item.field)) })}</li>`).join('')}</ul>` : ''}
     ${result.failed?.length ? `<h3>${tr('notSatisfied')}</h3><ul>${result.failed.map(item => `<li>${tr('requirementNotMet', { requirement: tr(eligibilityFieldKey(item.field)) })}</li>`).join('')}</ul>` : ''}
@@ -1019,7 +1114,6 @@ function eligibilityResult(result, resource) {
     ${result.program?.localEligibilityVerified && resource.requiredDocuments?.length ? `<h3>${tr('documents')}</h3><ul>${resource.requiredDocuments.map(item => `<li>${esc(item)}</li>`).join('')}</ul>` : ''}
     <h3>${tr('nextSteps')}</h3><p>${tr('confirmOrganization')}</p>
     <p><strong>${tr('lastVerified')}:</strong> ${esc(result.program?.eligibilityLastVerified || tr('nonePublished'))}</p>
-    ${source ? `<a href="${attr(source)}" target="_blank" rel="noopener noreferrer">${tr('officialSource')} ↗</a>` : ''}
     <p class="privacy-notice">${tr('preliminaryOnly')}</p>
     <button class="ghost" data-clear-eligibility>${tr('restartQuiz')}</button>
   </section>`;
@@ -1079,20 +1173,23 @@ function requirementsPanel() {
   const resource = currentResource();
   if (state.panel !== 'requirements' || !resource) return '';
   const local = localProgramForResource(resource, state.location);
-  const source = safeUrl(local?.eligibilitySourceUrl || resource.sourceUrls[0]);
+  const requirementsHeading = local?.localEligibilityVerified
+    ? tr('requirementsTitle')
+    : ['no_restrictions_listed', 'open'].includes(local?.eligibilityStatus)
+      ? tr('noEligibilityRequirementsListed')
+      : tr('eligibilityTemporarilyUnavailable');
   const eligibilityMessage = local?.localEligibilityVerified
     ? resource.eligibilitySummary
-    : local && !local.eligibilityRules.length
-      ? tr('eligibilityNotPubliclyListed')
-      : tr('noLocalRules');
-  return drawer(`<h2 id="panel-title">${tr('requirementsTitle')}</h2>
+    : ['no_restrictions_listed', 'open'].includes(local?.eligibilityStatus)
+      ? tr('noEligibilityRequirementsExplanation')
+      : tr('eligibilityTemporarilyUnavailableExplanation');
+  return drawer(`<h2 id="panel-title">${requirementsHeading}</h2>
     <p><strong>${tr('localProgramUsed')}:</strong> ${esc(resource.name)}</p>
     <p><strong>${tr('locationUsed')}:</strong> ${esc(state.location || tr('notEntered'))}</p>
     <p>${esc(eligibilityMessage)}</p>
     ${local?.localEligibilityVerified ? eligibilityDetailsBlock(resource) : ''}
     ${local?.localEligibilityVerified && resource.requiredDocuments.length ? `<h3>${tr('documents')}</h3><ul>${resource.requiredDocuments.map(item => `<li>${esc(item)}</li>`).join('')}</ul>` : ''}
     <p><strong>${tr('lastVerified')}:</strong> ${esc(local?.eligibilityLastVerified || tr('nonePublished'))}</p>
-    ${source ? `<a href="${attr(source)}" target="_blank" rel="noopener noreferrer">${tr('fullRequirements')} ↗</a>` : ''}
     <p class="privacy-notice">${tr('preliminaryOnly')}</p>`);
 }
 
@@ -1183,6 +1280,7 @@ function render(options = {}) {
   const page = {
     home: homePage,
     find: findPage,
+    nationwide: nationwidePage,
     eligibility: eligibilityPage,
     registration: registrationPage,
     saved: savedPage,
@@ -1195,11 +1293,14 @@ function render(options = {}) {
 async function researchMissingSchedules(resources) {
   if (state.offline) return resources;
   const pending = resources.map(resource => (
-    !resource.weeklyHours && resource.sourceUrls?.length
+    (!resource.weeklyHours || !resourceIsFresh(resource)) && resource.sourceUrls?.length
       ? { ...resource, scheduleVerificationStatus: 'researching' }
       : resource
   ));
-  const candidates = pending.filter(resource => resource.scheduleVerificationStatus === 'researching').slice(0, 5);
+  const candidates = pending
+    .filter(resource => resource.scheduleVerificationStatus === 'researching')
+    .sort((a, b) => Number(b.verificationPriority === 'high') - Number(a.verificationPriority === 'high'))
+    .slice(0, 5);
   if (!candidates.length) return pending;
   const checkedResults = await Promise.allSettled(candidates.map(resource => verifyResourceSchedule(resource)));
   const checked = checkedResults
@@ -1230,6 +1331,17 @@ async function enrichStoredEvidence(point, { key, location, quiet = false } = {}
       updated = updated.map(resource => enriched.get(resource.id) || resource);
       updated = await geocodeResourceAddresses(updated, { origin: point, maximum: 20 });
     }
+    const outdated = updated
+      .filter(resource => resource.scope !== 'nationwide-online' && !resourceIsFresh(resource))
+      .sort((a, b) => Number(b.verificationPriority === 'high') - Number(a.verificationPriority === 'high'))
+      .slice(0, 5);
+    if (outdated.length) {
+      const verified = await Promise.allSettled(outdated.map(resource => verifyResourceSchedule(resource)));
+      const replacements = new Map(verified
+        .filter(result => result.status === 'fulfilled' && resourceIsFresh(result.value))
+        .map(result => [String(result.value.id), result.value]));
+      updated = updated.map(resource => replacements.get(String(resource.id)) || resource);
+    }
     if (key && state.activeSearchKey !== key) return updated;
     state.storedResults = updated;
     if (state.searched && !quiet) render();
@@ -1250,17 +1362,18 @@ async function performNearbySearch({
   if (state.activeSearchKey !== key) return state.liveResults;
   state.errorKey = '';
   state.errorText = '';
+  state.locationSuggestions = [];
   state.noticeKey = '';
   state.loading = true;
   if (!quiet) render();
-  if (cached) {
-    state.liveResults = cached.resources;
-    state.noticeKey = cached.stale ? 'stale' : '';
+  const freshCached = cached && !cached.stale && cached.resources.length ? cached : null;
+  if (freshCached) {
+    state.liveResults = rankResources(mergeDuplicates(freshCached.resources), { categories: desired });
     if (!quiet) render();
   }
   if (state.offline) {
     state.loading = false;
-    if (cached) state.noticeKey = 'cached';
+    if (!freshCached && !staticMatches().length) state.errorKey = 'searchUnavailable';
     if (!quiet) render();
     return state.liveResults;
   }
@@ -1269,6 +1382,18 @@ async function performNearbySearch({
     if (state.activeSearchKey !== key) return state.liveResults;
     state.coordinates = { lat: point.lat, lng: point.lng };
     state.resolvedLocation = point.label || location;
+    const canonicalKey = coordinateCacheKey(point, state.category || 'all', radius);
+    const canonicalCached = canonicalKey ? readCachedSearch(safeObject(STORAGE.cache), canonicalKey) : null;
+    const reusableCached = canonicalCached && !canonicalCached.stale && canonicalCached.resources.length
+      ? canonicalCached
+      : freshCached;
+    if (reusableCached) {
+      state.liveResults = rankResources(mergeDuplicates([
+        ...state.liveResults,
+        ...reusableCached.resources
+      ]), { categories: desired }).slice(0, 50);
+      if (!quiet) render();
+    }
     void enrichStoredEvidence(point, { key, location, quiet });
     let rows = await fetchNearbyResources({
       lat: point.lat,
@@ -1276,26 +1401,38 @@ async function performNearbySearch({
       radius
     });
     if (desired.length) rows = rows.filter(resource => desired.includes(resource.category));
-    rows = rankResources(mergeDuplicates(rows), { categories: desired }).slice(0, 50);
-    persist(STORAGE.cache, writeCachedSearch(cache, key, rows));
+    rows = rankResources(mergeDuplicates([
+      ...(reusableCached?.resources || []),
+      ...rows
+    ]), { categories: desired }).slice(0, 50);
+    let updatedCache = writeCachedSearch(safeObject(STORAGE.cache), key, rows);
+    if (canonicalKey) updatedCache = writeCachedSearch(updatedCache, canonicalKey, rows);
+    persist(STORAGE.cache, updatedCache);
     persist(STORAGE.searches, [...new Set([...safeArray(STORAGE.searches), location])].slice(-10));
     if (state.activeSearchKey !== key) return rows;
     state.liveResults = rows;
-    if (cached) state.noticeKey = 'refreshed';
     if (!quiet) render();
     void enrichmentCoordinator.run(`hours:${key}`, async () => {
       const checked = await researchMissingSchedules(rows);
-      persist(STORAGE.cache, writeCachedSearch(safeObject(STORAGE.cache), key, checked));
+      const complete = rankResources(mergeDuplicates([...state.liveResults, ...checked]), { categories: desired }).slice(0, 50);
+      let checkedCache = writeCachedSearch(safeObject(STORAGE.cache), key, complete);
+      if (canonicalKey) checkedCache = writeCachedSearch(checkedCache, canonicalKey, complete);
+      persist(STORAGE.cache, checkedCache);
       if (state.activeSearchKey !== key) return checked;
-      state.liveResults = checked;
+      state.liveResults = complete;
       if (!quiet) render();
-      return checked;
+      return complete;
     });
   } catch (error) {
     if (state.activeSearchKey === key) {
-      if (error.code === 'AMBIGUOUS_LOCATION') state.errorKey = 'locationAmbiguous';
-      else if (!state.liveResults.length && !staticMatches().length) state.errorKey = 'searchUnavailable';
-      if (cached) state.noticeKey = 'cached';
+      if (error.code === 'AMBIGUOUS_LOCATION') {
+        state.errorKey = 'locationAmbiguous';
+        state.locationSuggestions = Array.isArray(error.choices) ? error.choices : [];
+      } else if (error.code === 'LOCATION_NOT_FOUND') {
+        state.errorKey = 'locationNotFound';
+      } else {
+        state.errorKey = 'searchUnavailable';
+      }
     }
   } finally {
     if (state.activeSearchKey === key) {
@@ -1340,6 +1477,7 @@ async function submitSearch(form) {
   state.travelMode = String(data.get('travelMode') || 'walking');
   state.query = searchNeed();
   state.coordinates = null;
+  state.locationSuggestions = [];
   if (!state.category || !state.location) {
     state.errorKey = 'locationRequired';
     render({ focus: !state.category ? '#needSelect' : '#locationInput' });
@@ -1432,6 +1570,23 @@ async function sendChat(form) {
     state.chatContext.category || '',
     state.chatContext.intent || ''
   ].join('|');
+  const liveResourceIds = new Set(state.liveResults.map(resource => String(resource.id)));
+  const assistantResources = mergeDuplicates([...state.liveResults, ...state.storedResults])
+    .filter(resource => String(resource.id) !== '211')
+    .filter(resource => resource.scope !== 'nationwide-online')
+    .filter(resource => resourceIsFresh(resource))
+    .filter(resource => {
+      if (liveResourceIds.has(String(resource.id))) return true;
+      const isLocationBound = Boolean(
+        resource.serviceAreas?.length
+        || resource.serviceAreaZipRanges?.length
+        || resource.serviceAreaZipPrefixes?.length
+      );
+      return isLocationBound && servesLocation(resource, state.location);
+    });
+  const selectedForAssistant = currentResource();
+  const selectedIsLocal = selectedForAssistant
+    && assistantResources.some(resource => String(resource.id) === selectedForAssistant.id);
   const task = storedFirstResponse({
     answer: () => {
       if (responseCache.has(responseKey)) return responseCache.get(responseKey);
@@ -1440,10 +1595,9 @@ async function sendChat(form) {
         selectedLanguage: messageLanguage,
         languageExplicit: state.languageExplicit,
         currentLocation: state.location,
-        resources: mergeDuplicates([...state.liveResults, ...state.storedResults])
-          .filter(resource => String(resource.id) !== '211'),
+        resources: assistantResources,
         context: state.chatContext,
-        selectedResource: currentResource(),
+        selectedResource: selectedIsLocal ? selectedForAssistant : null,
         translate
       });
       return responseCache.set(responseKey, answer);
@@ -1530,6 +1684,15 @@ app.addEventListener('click', async event => {
       },
       { enableHighAccuracy: false, timeout: 10000, maximumAge: 300000 }
     );
+  }
+  if (target.matches('[data-location-suggestion]')) {
+    state.location = target.dataset.locationSuggestion;
+    state.locationSuggestions = [];
+    state.errorKey = '';
+    state.coordinates = { lat: Number(target.dataset.lat), lng: Number(target.dataset.lng) };
+    persistShared();
+    render();
+    void searchNearby({ coordinates: state.coordinates });
   }
   if (target.matches('[data-save]')) {
     const id = target.dataset.save;
@@ -1746,6 +1909,10 @@ app.addEventListener('change', event => {
   }
   if (target.matches('[data-filter-text]')) {
     state.filters[target.dataset.filterText] = target.value;
+    render();
+  }
+  if (target.matches('[data-online-filter]')) {
+    state.onlineFilters[target.dataset.onlineFilter] = target.value;
     render();
   }
   if (target.matches('#sortBy')) {

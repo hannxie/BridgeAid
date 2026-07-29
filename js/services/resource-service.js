@@ -1,6 +1,44 @@
 import { resourceScheduleState } from './schedule-service.js';
 
-const FRESH_FOR_MS = 24 * 60 * 60 * 1000;
+const SEARCH_CACHE_FRESH_FOR_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_VERIFICATION_PERIOD_DAYS = 90;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function normalizedToken(value) {
+  return String(value || '')
+    .normalize('NFKD')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, '');
+}
+
+function timestamp(value) {
+  const parsed = Date.parse(String(value || ''));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+export function resourceVerificationDate(resource) {
+  return resource.lastVerified
+    || resource.verified
+    || resource.scheduleLastVerified
+    || resource.hoursLastVerified
+    || resource.eligibilityLastVerified
+    || resource.applicationLastVerified
+    || resource.dateDiscovered
+    || '';
+}
+
+export function resourceIsFresh(resource, now = Date.now(), defaultDays = DEFAULT_VERIFICATION_PERIOD_DAYS) {
+  const expiresAt = timestamp(resource.verificationExpiresAt);
+  if (expiresAt !== null) return expiresAt >= now;
+  const checkedAt = timestamp(resourceVerificationDate(resource));
+  if (checkedAt === null) return false;
+  const periodDays = Math.max(1, Number(resource.verificationPeriodDays) || defaultDays);
+  return now - checkedAt <= periodDays * DAY_MS;
+}
+
+export function freshResources(resources = [], now = Date.now(), defaultDays = DEFAULT_VERIFICATION_PERIOD_DAYS) {
+  return resources.filter(resource => resourceIsFresh(resource, now, defaultDays));
+}
 
 export function textFor(value, language = 'en') {
   if (!value) return '';
@@ -28,6 +66,9 @@ export function normalizeResource(resource, language = 'en') {
     programName: resource.programName || '',
     name: resource.name || resource.organizationName || 'Unnamed organization',
     category: resource.category || 'all',
+    scope: resource.scope || 'location',
+    onlineOnly: Boolean(resource.onlineOnly),
+    requiresLocalProvider: Boolean(resource.requiresLocalProvider),
     subcategories: Array.isArray(resource.subcategories) ? resource.subcategories : [],
     services,
     description: textFor(resource.description, language),
@@ -70,6 +111,7 @@ export function normalizeResource(resource, language = 'en') {
     walkInStatus: textFor(resource.walkInStatus, language)
       || (/walk.?in/i.test(`${appointmentText} ${accessText}`) ? 'Walk-ins accepted' : ''),
     eligibilitySummary: textFor(resource.eligibilitySummary || resource.eligibility, language),
+    eligibilityStatus: resource.eligibilityStatus || '',
     eligibilityDetails: Object.fromEntries(Object.entries(resource.eligibilityDetails || {})
       .map(([key, value]) => [key, textFor(value, language)])),
     eligibilityRules: Array.isArray(resource.eligibilityRules) ? resource.eligibilityRules : [],
@@ -96,12 +138,16 @@ export function normalizeResource(resource, language = 'en') {
     afterApplying: textFor(resource.afterApplying, language),
     applicationSourceUrl: resource.applicationSourceUrl || '',
     applicationLastVerified: resource.applicationLastVerified || '',
+    serviceOffered: textFor(resource.serviceOffered || resource.description, language),
+    whoItHelps: textFor(resource.whoItHelps || resource.eligibilitySummary || resource.eligibility, language),
     officialDomains: Array.isArray(resource.officialDomains) ? resource.officialDomains : [],
     freeStatus: resource.freeStatus || 'Confirm with organization',
     source: resource.source || 'Source not named',
     sourceUrls,
     dateDiscovered: resource.dateDiscovered || '',
     lastVerified: resource.lastVerified || resource.verified || '',
+    verificationExpiresAt: resource.verificationExpiresAt || '',
+    verificationPeriodDays: Number(resource.verificationPeriodDays) || DEFAULT_VERIFICATION_PERIOD_DAYS,
     confidence: Number.isFinite(Number(resource.confidence)) ? Number(resource.confidence) : null,
     verificationStatus: resource.verificationStatus || (resource.verified ? 'Previously checked' : 'Needs confirmation'),
     conflicts: Array.isArray(resource.conflicts) ? resource.conflicts : [],
@@ -138,44 +184,135 @@ export function resourceCoverage(resources = []) {
 
 export function resourceKey(resource) {
   const r = normalizeResource(resource);
-  return `${r.name}|${r.address}|${r.phone}`.toLowerCase().replace(/\W/g, '');
+  const name = normalizedToken(r.name);
+  const address = normalizedToken(r.address);
+  const phone = String(r.phone || '').replace(/\D/g, '').slice(-10);
+  const coordinates = r.latitude !== null && r.longitude !== null
+    ? `${r.latitude.toFixed(3)},${r.longitude.toFixed(3)}`
+    : '';
+  return [name, address || coordinates, phone].filter(Boolean).join('|') || String(r.id);
+}
+
+function sameResource(left, right) {
+  const a = normalizeResource(left);
+  const b = normalizeResource(right);
+  const aName = normalizedToken(a.name);
+  const bName = normalizedToken(b.name);
+  const aAddress = normalizedToken(a.address);
+  const bAddress = normalizedToken(b.address);
+  const aPhone = String(a.phone || '').replace(/\D/g, '').slice(-10);
+  const bPhone = String(b.phone || '').replace(/\D/g, '').slice(-10);
+  if (aPhone.length >= 7 && aPhone === bPhone) return true;
+  if (aName && aName === bName && aAddress && aAddress === bAddress) return true;
+  if (aName && aName === bName
+    && a.latitude !== null && b.latitude !== null
+    && a.longitude !== null && b.longitude !== null) {
+    return a.latitude.toFixed(3) === b.latitude.toFixed(3)
+      && a.longitude.toFixed(3) === b.longitude.toFixed(3);
+  }
+  return Boolean(a.id && b.id && a.id === b.id);
+}
+
+function recordQuality(resource) {
+  const r = normalizeResource(resource);
+  const usefulFields = [
+    r.address, r.phone, r.officialWebsite, r.weeklyHours, r.eligibilitySummary,
+    r.registrationRequirement, r.lastVerified
+  ].filter(Boolean).length;
+  const official = /official|provider|government|nonprofit/i.test(`${r.source} ${r.verificationStatus}`) ? 20 : 0;
+  return official + usefulFields + (r.confidence || 0) * 10;
+}
+
+function nonEmpty(value) {
+  return value !== '' && value !== null && value !== undefined
+    && (!Array.isArray(value) || value.length > 0);
+}
+
+function mergeResourceGroup(group) {
+  const ordered = [...group].sort((a, b) =>
+    recordQuality(a) - recordQuality(b)
+    || resourceKey(a).localeCompare(resourceKey(b))
+    || String(a.id || '').localeCompare(String(b.id || '')));
+  const result = {};
+  const arrayKeys = new Set(ordered.flatMap(item =>
+    Object.entries(item).filter(([, value]) => Array.isArray(value)).map(([key]) => key)));
+  for (const item of ordered) {
+    for (const [key, value] of Object.entries(item)) {
+      if (!nonEmpty(value)) continue;
+      if (arrayKeys.has(key)) {
+        const values = [...(Array.isArray(result[key]) ? result[key] : []), ...(Array.isArray(value) ? value : [])];
+        result[key] = [...new Map(values.map(entry => [
+          typeof entry === 'object' ? JSON.stringify(entry) : String(entry),
+          entry
+        ])).values()];
+      } else {
+        result[key] = value;
+      }
+    }
+  }
+  result.sourceUrls = [...new Set([
+    ...(result.sourceUrls || []),
+    ...ordered.flatMap(item => [item.url, item.osmUrl, item.hoursSourceUrl, item.scheduleSourceUrl].filter(Boolean))
+  ])];
+  return result;
 }
 
 export function mergeDuplicates(resources) {
-  const merged = new Map();
-  for (const item of resources) {
-    const key = resourceKey(item) || String(item.id);
-    if (!merged.has(key)) {
-      merged.set(key, { ...item, sourceUrls: [...(item.sourceUrls || [])] });
-      continue;
+  const rows = (resources || []).filter(Boolean);
+  const parents = rows.map((_, index) => index);
+  const find = index => {
+    while (parents[index] !== index) {
+      parents[index] = parents[parents[index]];
+      index = parents[index];
     }
-    const existing = merged.get(key);
-    const combinedSources = new Set([
-      ...(existing.sourceUrls || []),
-      ...(item.sourceUrls || []),
-      existing.url,
-      item.url,
-      existing.osmUrl,
-      item.osmUrl
-    ].filter(Boolean));
-    merged.set(key, {
-      ...item,
-      ...existing,
-      sourceUrls: [...combinedSources],
-      conflicts: [...new Set([...(existing.conflicts || []), ...(item.conflicts || [])])]
-    });
+    return index;
+  };
+  const union = (left, right) => {
+    const a = find(left);
+    const b = find(right);
+    if (a !== b) parents[Math.max(a, b)] = Math.min(a, b);
+  };
+  for (let left = 0; left < rows.length; left += 1) {
+    for (let right = left + 1; right < rows.length; right += 1) {
+      if (sameResource(rows[left], rows[right])) union(left, right);
+    }
   }
-  return [...merged.values()];
+  const groups = new Map();
+  rows.forEach((row, index) => {
+    const root = find(index);
+    if (!groups.has(root)) groups.set(root, []);
+    groups.get(root).push(row);
+  });
+  return [...groups.values()]
+    .map(mergeResourceGroup)
+    .sort(stableResourceComparator);
 }
 
 export function cacheKey(location, category, radius) {
-  return `${String(location).trim().toLowerCase()}|${category || 'all'}|${Number(radius) || 5}`;
+  const normalizedLocation = String(location || '')
+    .normalize('NFKC')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .replace(/\s*,\s*/g, ',');
+  return `${normalizedLocation}|${category || 'all'}|${Number(radius) || 5}`;
+}
+
+export function coordinateCacheKey(point, category, radius) {
+  if (!Number.isFinite(Number(point?.lat)) || !Number.isFinite(Number(point?.lng))) return '';
+  return `@${Number(point.lat).toFixed(4)},${Number(point.lng).toFixed(4)}|${category || 'all'}|${Number(radius) || 5}`;
 }
 
 export function readCachedSearch(cache, key, now = Date.now()) {
   const entry = cache?.[key];
   if (!entry || !Array.isArray(entry.resources)) return null;
-  return { ...entry, stale: now - Number(entry.savedAt || 0) > FRESH_FOR_MS };
+  const resources = freshResources(entry.resources, now);
+  return {
+    ...entry,
+    resources,
+    stale: now - Number(entry.savedAt || 0) > SEARCH_CACHE_FRESH_FOR_MS,
+    expiredCount: entry.resources.length - resources.length
+  };
 }
 
 export function writeCachedSearch(cache, key, resources, now = Date.now()) {
@@ -204,13 +341,14 @@ export function filterResources(resources, filters = {}, options = {}) {
 export function sortResources(resources, sortBy = 'relevance', now = new Date()) {
   const rows = [...resources];
   const distance = resource => Number.isFinite(resource.distance) ? resource.distance : Number.POSITIVE_INFINITY;
-  if (sortBy === 'nearest') return rows.sort((a, b) => distance(a) - distance(b));
+  if (sortBy === 'nearest') return rows.sort((a, b) =>
+    distance(a) - distance(b) || stableResourceComparator(a, b));
   if (sortBy === 'farthest') {
     return rows.sort((a, b) => {
       const aMissing = !Number.isFinite(a.distance);
       const bMissing = !Number.isFinite(b.distance);
       if (aMissing !== bMissing) return aMissing ? 1 : -1;
-      return distance(b) - distance(a);
+      return distance(b) - distance(a) || stableResourceComparator(a, b);
     });
   }
   if (sortBy === 'openSoonest') {
@@ -219,10 +357,27 @@ export function sortResources(resources, sortBy = 'relevance', now = new Date())
       const bWait = resourceScheduleState(normalizeResource(b), now).minutesUntilOpen;
       const safeA = Number.isFinite(aWait) ? aWait : Number.POSITIVE_INFINITY;
       const safeB = Number.isFinite(bWait) ? bWait : Number.POSITIVE_INFINITY;
-      return safeA - safeB || distance(a) - distance(b);
+      return safeA - safeB || distance(a) - distance(b) || stableResourceComparator(a, b);
     });
   }
-  return rows.sort((a, b) => Number(b._rank || 0) - Number(a._rank || 0));
+  return rows.sort((a, b) =>
+    Number(b._rank || 0) - Number(a._rank || 0) || stableResourceComparator(a, b));
+}
+
+export function stableResourceComparator(a, b) {
+  const left = normalizeResource(a);
+  const right = normalizeResource(b);
+  const distance = resource => Number.isFinite(resource.distance) ? resource.distance : Number.POSITIVE_INFINITY;
+  const availability = resource => {
+    if (/open now/i.test(resource.availabilityStatus)) return 0;
+    if (/available|published|appointment/i.test(resource.availabilityStatus)) return 1;
+    return 2;
+  };
+  return distance(left) - distance(right)
+    || availability(left) - availability(right)
+    || left.name.localeCompare(right.name, 'en', { sensitivity: 'base' })
+    || left.address.localeCompare(right.address, 'en', { sensitivity: 'base' })
+    || left.id.localeCompare(right.id, 'en', { sensitivity: 'base' });
 }
 
 export function rankResources(resources, context = {}) {
@@ -237,5 +392,5 @@ export function rankResources(resources, context = {}) {
     if (r.sourceUrls.length) score += 6;
     if (r.confidence !== null) score += r.confidence * 10;
     return { ...item, _rank: score };
-  }).sort((a, b) => b._rank - a._rank);
+  }).sort((a, b) => b._rank - a._rank || stableResourceComparator(a, b));
 }
