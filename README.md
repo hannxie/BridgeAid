@@ -81,7 +81,11 @@ The safety-today response does not hide ordinary resources. BridgeAid keeps 211 
 
 ## BridgeAI architecture
 
-Users see one BridgeAI assistant. `js/services/grounded-assistant.js` detects the latest-message language, intent, category, and location; remembers the last three grounded recommendations; supports resource, hours, eligibility, application, location, save, and call follow-ups; and recommends only quality-checked sourced records that serve the selected location:
+Users see one BridgeAI assistant. The browser sends the latest message and
+minimal page context to `POST /api/chat`. The server uses the OpenAI Responses
+API with Structured Outputs to detect language, intent, category, time,
+urgency, and location, then validates every returned resource ID against
+quality-checked BridgeAid data:
 
 ```text
 BridgeAI
@@ -92,11 +96,18 @@ BridgeAI
 └── Internet Discovery foundation
 ```
 
-The current browser implementation is deterministic and source-bound; it does not call a generative AI API. Search and chat use current curated or discovered records and never invent missing facts. Saved-resource snapshots remain visible until the user removes them, with their displayed verification date so the user can confirm time-sensitive details.
+The API key remains server-side. Provider requests use `store: false` and a
+bounded list of verified public resource facts. Unknown IDs are rejected, and
+provider failures show a localized safe error rather than falling back to
+keyword-based claims. Helper notes, raw quiz answers, and exact GPS coordinates
+are not sent. See `docs/CHATBOT_PROVIDER.md` for the complete data boundary.
 
 Relevant files:
 
-- `js/services/grounded-assistant.js`
+- `js/services/chat-api-service.js`
+- `server/index.js`
+- `server/services/chat-service.js`
+- `server/services/openai-chat-provider.js`
 - `js/services/location-service.js`
 - `js/services/schedule-service.js`
 - `js/services/eligibility-service.js`
@@ -193,7 +204,11 @@ Browser storage is not encrypted and is not a secure case-management system. Any
 
 ## Administrative and backend security
 
-No administrative UI is shipped publicly because the repository has no authentication provider or backend runtime. The future server model in `server/services/admin-service.js` rejects unauthenticated and non-admin sessions and records audited changes. `server/services/background-job-service.js` models bounded retries and failure history.
+No administrative UI is shipped publicly because the repository has no
+authentication provider. The Node runtime serves the application and BridgeAI
+endpoint only. The future administrative model in
+`server/services/admin-service.js` rejects unauthenticated and non-admin
+sessions and records audited changes.
 
 Before production administration can be enabled, implement:
 
@@ -209,9 +224,14 @@ Do not add a client-side “admin password”; it would not secure the dashboard
 
 ## Environment variables
 
-The current static application requires no secrets.
+BridgeAI requires a server-side OpenAI API key in production. `.env.example`
+documents:
 
-`.env.example` documents reserved backend settings:
+- `OPENAI_API_KEY`
+- `OPENAI_CHAT_MODEL`
+- `OPENAI_CHAT_TIMEOUT_MS`
+- `CHAT_RATE_LIMIT_PER_MINUTE`
+- `PORT`
 
 - `DATABASE_URL`
 - `SESSION_SECRET`
@@ -225,15 +245,7 @@ Never put these values in `js/`, `index.html`, or another browser-delivered file
 
 ## Run locally
 
-Python:
-
-```bash
-python -m http.server 8080
-```
-
-Then open `http://localhost:8080`.
-
-The package script provides the same command:
+Set `OPENAI_API_KEY` in the server environment to enable BridgeAI, then run:
 
 ```bash
 npm start

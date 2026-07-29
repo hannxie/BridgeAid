@@ -3,7 +3,7 @@ import {
   keywordMap,
   resources as sourceResources
 } from '../data/resources.js?v=16';
-import { translate, detectMessageLanguage, requestedLanguage } from './localization.js?v=16';
+import { translate, detectMessageLanguage } from './localization.js?v=17';
 import {
   safeStorageGet,
   safeStorageSet,
@@ -45,8 +45,7 @@ import {
 } from './services/places-enrichment-service.js';
 import {
   createRequestCoordinator,
-  memoizeByKey,
-  storedFirstResponse
+  memoizeByKey
 } from './services/performance-service.js';
 import {
   localProgramForResource,
@@ -55,11 +54,7 @@ import {
   servesLocation
 } from './services/local-eligibility-service.js?v=16';
 import { registrationGuidance } from './services/registration-service.js';
-import {
-  answerGroundedAssistant,
-  assistantCategory,
-  locationFromMessage
-} from './services/grounded-assistant.js?v=16';
+import { requestBridgeAI, ChatApiError } from './services/chat-api-service.js?v=17';
 import {
   createCorrectionReport,
   queueCorrection,
@@ -89,8 +84,9 @@ import {
 } from './services/local-search-workflow.js?v=16';
 import {
   conditionalEligibilityQuestions,
-  matchNationwidePrograms
-} from './services/nationwide-eligibility-service.js?v=16';
+  matchNationwidePrograms,
+  pruneConditionalAnswers
+} from './services/nationwide-eligibility-service.js?v=17';
 import {
   locationContext,
   matchesUserLocation,
@@ -182,11 +178,15 @@ const state = {
     language: '',
     verifiedEligibility: false
   },
+  filtersOpen: false,
+  filterDraft: null,
   onlineFilters: {
     category: 'all',
     eligibility: 'all',
     applicationMethod: 'all'
   },
+  onlineFiltersOpen: false,
+  onlineFilterDraft: null,
   saved: new Set(safeArray(STORAGE.saved)),
   savedResources: safeArray(STORAGE.savedResources),
   liveResults: [],
@@ -230,7 +230,7 @@ const state = {
   chatLoading: false,
   chatMessages: [],
   chatContext: {},
-  chatMetrics: { lastResponseMs: null, answerComputeMs: null, strategy: 'stored-first' }
+  chatMetrics: { lastResponseMs: null, answerComputeMs: null, strategy: 'api' }
 };
 
 function safeObject(key) {
@@ -245,7 +245,6 @@ function safeArray(key) {
 
 const app = document.querySelector('#app');
 const translationCache = memoizeByKey(500);
-const responseCache = memoizeByKey(100);
 const enrichmentCoordinator = createRequestCoordinator();
 const locationSuggestionCoordinator = createRequestCoordinator();
 const searchLifecycle = createSearchLifecycle();
@@ -480,13 +479,7 @@ function header() {
   return `<header class="topbar">
     <nav class="wrap nav" aria-label="${attr(tr('mainNavigation'))}">
       <button class="brand" data-page="home" aria-label="${attr(tr('navHome'))}"${brandCurrent ? ' aria-current="page"' : ''}>
-        <span class="logo" aria-hidden="true"><svg viewBox="0 0 64 64" width="40" height="40" focusable="false">
-          <rect width="64" height="64" rx="16" fill="#155f4a"/>
-          <circle cx="15" cy="23" r="5" fill="#f6a15f"/><circle cx="49" cy="23" r="5" fill="#f6a15f"/>
-          <path d="M15 23c7-12 27-12 34 0" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round"/>
-          <path d="M10 42h44M17 42V29M47 42V29" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round"/>
-          <path d="M26 42V31M38 42V31" fill="none" stroke="#d8efe7" stroke-width="3" stroke-linecap="round"/>
-        </svg></span>
+        <span class="logo" aria-hidden="true"><img src="assets/logo-bridgeaid-icon.svg" alt="" width="40" height="40"></span>
         <span><strong>BridgeAid</strong><small>${tr('brandTagline')}</small></span>
       </button>
       <button class="mobile-menu" data-menu aria-label="${attr(tr('openMenu'))}" aria-expanded="false">☰</button>
@@ -579,7 +572,10 @@ function searchBox(compact = false) {
         <span>${tr('radius')}</span>
         <select id="radius" name="radius">${radiusOptions()}</select>
       </label>
-      <button class="primary search-submit" type="submit">⌕ ${tr('findResources')}</button>
+      <div class="search-actions">
+        <button class="primary search-submit" type="submit">⌕ ${tr('findResources')}</button>
+        ${filterButton('local')}
+      </div>
     </div>
     ${state.category === 'other' ? `<label class="search-other">
       <span>${tr('needOtherLabel')}</span>
@@ -602,6 +598,7 @@ function searchBox(compact = false) {
       </select></label>
       <button type="button" class="secondary" data-gps>◎ ${tr('useLocation')}</button>
     </div>
+    ${filtersPanel()}
   </form>`;
 }
 
@@ -695,7 +692,11 @@ function helperIntake() {
       </label>
     </details>
     ${state.helperIntake.safetyTonight === 'notSafe' ? `<div class="danger-notice">${tr('safetySupportNote')}</div>` : ''}
-    <button class="primary helper-find" data-helper-search>${tr('findResources')}</button>
+    <div class="search-actions helper-search-actions">
+      <button class="primary helper-find" data-helper-search>${tr('findResources')}</button>
+      ${filterButton('local')}
+    </div>
+    ${filtersPanel()}
   </section>`;
 }
 
@@ -716,8 +717,10 @@ function homePage() {
     </section>
     ${statusMessages()}
     <section class="wrap section home-guide" aria-labelledby="home-guide-title">
-      <div class="mission-copy"><span class="eyebrow">${tr('homeWhy')}</span><h2 id="home-guide-title">${tr('homeMissionTitle')}</h2>
-        <p>${tr('homeMissionText')}</p></div>
+      <div class="mission-copy">
+        <h2 class="mission-bubble" id="home-guide-title">${tr('homeMissionTitle')}</h2>
+        <p>${tr('homeMissionText')}</p>
+      </div>
       <div><h2>${tr('homeHelpsTitle')}</h2>
         <ul class="home-help-list">
           <li>${tr('homeHelpNearby')}</li>
@@ -737,10 +740,44 @@ function homePage() {
   </main>`;
 }
 
+function emptyLocalFilters() {
+  return {
+    openNow: false,
+    availableToday: false,
+    walkIn: false,
+    noId: false,
+    noRegistration: false,
+    accessible: false,
+    language: '',
+    verifiedEligibility: false
+  };
+}
+
+function activeFilterCount(filters = state.filters) {
+  return Object.values(filters).filter(value => value === true || (typeof value === 'string' && value.trim())).length;
+}
+
+function filterButton(kind = 'local') {
+  const online = kind === 'online';
+  const open = online ? state.onlineFiltersOpen : state.filtersOpen;
+  const count = online
+    ? Object.values(state.onlineFilters).filter(value => value !== 'all').length
+    : activeFilterCount();
+  const suffix = count ? ` (${count})` : '';
+  return `<button class="secondary filters-toggle" type="button" data-toggle-filters="${kind}"
+    aria-expanded="${open}" aria-controls="${online ? 'nationwide-filter-panel' : 'local-filter-panel'}"
+    aria-label="${attr(tr('filterButtonLabel', { count }))}">
+    <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" focusable="false"><path d="M3 5h14M6 10h8M8 15h4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+    ${tr('filters')}${suffix}
+  </button>`;
+}
+
 function filtersPanel() {
-  const checkbox = (name, key) => `<label class="filter-check"><input type="checkbox" data-filter="${name}" ${state.filters[name] ? 'checked' : ''}><span>${tr(key)}</span></label>`;
-  return `<details class="filters-panel">
-    <summary>${tr('filters')}</summary>
+  if (!state.filtersOpen) return '';
+  const draft = state.filterDraft || { ...state.filters };
+  const checkbox = (name, key) => `<label class="filter-check"><input type="checkbox" data-filter-draft="${name}" ${draft[name] ? 'checked' : ''}><span>${tr(key)}</span></label>`;
+  return `<section class="filters-panel" id="local-filter-panel" aria-label="${attr(tr('filterPanelLabel'))}">
+    <div class="filter-panel-head"><h2>${tr('filters')}</h2><button class="text-btn" type="button" data-close-filters="local">${tr('close')}</button></div>
     <div class="filter-grid">
       ${checkbox('openNow', 'filterOpenNow')}
       ${checkbox('availableToday', 'filterAvailableToday')}
@@ -749,10 +786,14 @@ function filtersPanel() {
       ${checkbox('noRegistration', 'filterNoRegistration')}
       ${checkbox('accessible', 'filterAccessible')}
       ${checkbox('verifiedEligibility', 'filterVerifiedEligibility')}
-      <label><span>${tr('filterLanguage')}</span><input data-filter-text="language" value="${attr(state.filters.language)}" placeholder="${attr(tr('filterLanguagePlaceholder'))}"></label>
-      <button class="ghost" data-clear-filters>${tr('clearFilters')}</button>
+      <label><span>${tr('filterLanguage')}</span><input data-filter-draft-text="language" maxlength="40" value="${attr(draft.language)}" placeholder="${attr(tr('filterLanguagePlaceholder'))}"></label>
     </div>
-  </details>`;
+    <div class="filter-actions">
+      <button class="primary" type="button" data-apply-filters="local">${tr('applyFilters')}</button>
+      <button class="ghost" type="button" data-clear-filters="local">${tr('clearFilters')}</button>
+      <button class="ghost" type="button" data-close-filters="local">${tr('close')}</button>
+    </div>
+  </section>`;
 }
 
 function scheduleDisplay(resource) {
@@ -1026,9 +1067,8 @@ function findPage() {
     </div>
     ${statusMessages()}
     ${state.mode === 'helper'
-      ? `<button class="secondary helper-edit-search" data-helper-edit>${tr('editHelperSearch')}</button>`
+      ? `<div class="search-actions helper-result-actions"><button class="secondary helper-edit-search" data-helper-edit>${tr('editHelperSearch')}</button>${filterButton('local')}</div>${filtersPanel()}`
       : searchBox(true)}
-    ${state.searched ? filtersPanel() : ''}
     ${state.loading ? `<div class="loading-state" role="status"><span class="spinner" aria-hidden="true"></span><strong>${tr('loading')}</strong></div>` : ''}
     ${state.discoveryStatus === 'discovering' ? `<div class="cache-state">${tr('discoveryRunning')}</div>` : ''}
     ${state.mode === 'helper' ? '' : comparisonPanel(resources)}
@@ -1176,14 +1216,25 @@ const US_STATE_OPTIONS = [
 
 function nationwideQuestionInput(question, value = '') {
   if (question.type === 'number') {
-    return `<input id="nationwide-answer" name="answer" type="number" min="${question.min}" max="${question.max}" value="${attr(value)}">`;
+    return `<input id="nationwide-answer" name="answer" type="number" min="${question.min}" max="${question.max}" value="${attr(value)}" aria-describedby="quiz-question-help">`;
+  }
+  if (question.type === 'yesno') {
+    const thirdChoice = ['disabilityStatus', 'pregnancyOrYoungChild'].includes(question.id)
+      ? ['prefer-not', tr('preferNotAnswer')]
+      : ['not-sure', tr('notSure')];
+    const options = [['yes', tr('yes')], ['no', tr('no')], thirdChoice];
+    return `<div class="quiz-choice-grid">${options.map(([optionValue, label]) => {
+      const id = `quiz-${question.id}-${optionValue}`;
+      return `<label class="quiz-choice" for="${attr(id)}">
+        <input id="${attr(id)}" type="radio" name="answer" value="${attr(optionValue)}" ${String(value) === optionValue ? 'checked' : ''}>
+        <span>${esc(label)}</span>
+      </label>`;
+    }).join('')}</div>`;
   }
   const options = question.type === 'state'
     ? US_STATE_OPTIONS
-    : question.type === 'yesno'
-      ? [['yes', tr('yes')], ['no', tr('no')], ['not-sure', tr('notSurePreferNot')]]
-      : question.options;
-  return `<select id="nationwide-answer" name="answer">
+    : question.options;
+  return `<select id="nationwide-answer" name="answer" aria-describedby="quiz-question-help">
     <option value="">${tr('chooseAnswer')}</option>
     ${options.map(([optionValue, label]) => {
       const optionKey = `quizOption_${question.id}_${String(optionValue).replace(/[^a-z0-9]+/gi, '_')}`;
@@ -1197,7 +1248,8 @@ function nationwideQuestionInput(question, value = '') {
 
 function nationwideQuizPanel(nationalResources) {
   const quiz = state.nationwideQuiz;
-  const answers = quiz.answers;
+  const answers = pruneConditionalAnswers(nationalResources, quiz.answers);
+  quiz.answers = answers;
   const questions = conditionalEligibilityQuestions(nationalResources, answers).slice(0, 8);
   if (quiz.completed) {
     const matches = matchNationwidePrograms(nationalResources, answers);
@@ -1229,6 +1281,13 @@ function nationwideQuizPanel(nationalResources) {
   }
   const question = questions[quiz.step];
   if (!question) {
+    if (!questions.length) {
+      return `<section class="nationwide-quiz" aria-labelledby="quiz-title">
+        <h2 id="quiz-title">${tr('quizTitle')}</h2>
+        <div class="error-state">${tr('quizRenderError')}</div>
+        <button class="ghost" data-quiz-clear>${tr('quizClear')}</button>
+      </section>`;
+    }
     quiz.completed = true;
     return nationwideQuizPanel(nationalResources);
   }
@@ -1237,9 +1296,14 @@ function nationwideQuizPanel(nationalResources) {
     <span class="eyebrow">${tr('quizProgress', { current: quiz.step + 1, total: questions.length })}</span>
     <h2 id="quiz-title">${tr('quizTitle')}</h2>
     <form id="nationwideQuizQuestion" data-question-id="${attr(question.id)}">
-      <label for="nationwide-answer"><strong>${esc(tr(`quizQuestion_${question.id}`))}</strong></label>
-      ${question.help ? `<p class="field-help">${esc(tr(`quizHelp_${question.id}`))}</p>` : ''}
-      ${nationwideQuestionInput(question, value)}
+      ${question.type === 'yesno'
+        ? `<fieldset class="quiz-choice-fieldset"><legend>${esc(tr(`quizQuestion_${question.id}`))}</legend>
+          ${question.help ? `<p class="field-help" id="quiz-question-help">${esc(tr(`quizHelp_${question.id}`))}</p>` : ''}
+          ${nationwideQuestionInput(question, value)}
+        </fieldset>`
+        : `<label for="nationwide-answer"><strong>${esc(tr(`quizQuestion_${question.id}`))}</strong></label>
+          ${question.help ? `<p class="field-help" id="quiz-question-help">${esc(tr(`quizHelp_${question.id}`))}</p>` : '<span id="quiz-question-help" class="sr-only"></span>'}
+          ${nationwideQuestionInput(question, value)}`}
       <div class="quiz-actions">
         ${quiz.step ? `<button class="ghost" type="button" data-quiz-back>${tr('back')}</button>` : ''}
         <button class="ghost" type="button" data-quiz-skip>${tr('quizSkip')}</button>
@@ -1247,6 +1311,40 @@ function nationwideQuizPanel(nationalResources) {
         <button class="primary" type="submit">${tr(quiz.step === questions.length - 1 ? 'quizSeeMatches' : 'next')}</button>
       </div>
     </form>
+  </section>`;
+}
+
+function onlineFiltersPanel(categoriesAvailable) {
+  if (!state.onlineFiltersOpen) return '';
+  const draft = state.onlineFilterDraft || { ...state.onlineFilters };
+  return `<section class="online-filters filters-panel" id="nationwide-filter-panel" aria-label="${attr(tr('nationwideFilters'))}">
+    <div class="filter-panel-head"><h3>${tr('filters')}</h3><button class="text-btn" type="button" data-close-filters="online">${tr('close')}</button></div>
+    <div class="filter-grid">
+      <label><span>${tr('category')}</span><select data-online-filter-draft="category">
+        <option value="all">${tr('categoryAll')}</option>
+        ${categoriesAvailable.map(category => `<option value="${attr(category)}" ${draft.category === category ? 'selected' : ''}>${categoryLabel(category)}</option>`).join('')}
+      </select></label>
+      <label><span>${tr('onlineEligibilityFilter')}</span><select data-online-filter-draft="eligibility">
+        <option value="all">${tr('filterAll')}</option>
+        <option value="open" ${draft.eligibility === 'open' ? 'selected' : ''}>${tr('onlineEligibilityOpen')}</option>
+        <option value="structured" ${draft.eligibility === 'structured' ? 'selected' : ''}>${tr('onlineEligibilityStructured')}</option>
+        <option value="varies" ${draft.eligibility === 'varies' ? 'selected' : ''}>${tr('onlineEligibilityVaries')}</option>
+        <option value="localProvider" ${draft.eligibility === 'localProvider' ? 'selected' : ''}>${tr('onlineEligibilityLocalProvider')}</option>
+      </select></label>
+      <label><span>${tr('applicationMethodFilter')}</span><select data-online-filter-draft="applicationMethod">
+        <option value="all">${tr('filterAll')}</option>
+        <option value="online" ${draft.applicationMethod === 'online' ? 'selected' : ''}>${tr('applyOnline')}</option>
+        <option value="phone" ${draft.applicationMethod === 'phone' ? 'selected' : ''}>${tr('applyByPhone')}</option>
+        <option value="mail" ${draft.applicationMethod === 'mail' ? 'selected' : ''}>${tr('applyByMail')}</option>
+        <option value="inPerson" ${draft.applicationMethod === 'inPerson' ? 'selected' : ''}>${tr('applyInPerson')}</option>
+        <option value="multiple" ${draft.applicationMethod === 'multiple' ? 'selected' : ''}>${tr('multipleMethods')}</option>
+      </select></label>
+    </div>
+    <div class="filter-actions">
+      <button class="primary" type="button" data-apply-filters="online">${tr('applyFilters')}</button>
+      <button class="ghost" type="button" data-clear-filters="online">${tr('clearFilters')}</button>
+      <button class="ghost" type="button" data-close-filters="online">${tr('close')}</button>
+    </div>
   </section>`;
 }
 
@@ -1276,28 +1374,8 @@ function nationwidePage() {
     <p class="lead">${tr('nationwideIntro')}</p>
     ${statusMessages()}
     ${nationwideQuizPanel(normalized)}
-    <div class="section-head nationwide-browse-head"><div><span class="eyebrow">${tr('officialSources')}</span><h2>${tr('browseNationwide')}</h2></div></div>
-    <section class="online-filters" aria-label="${attr(tr('nationwideFilters'))}">
-      <label><span>${tr('category')}</span><select data-online-filter="category">
-        <option value="all">${tr('categoryAll')}</option>
-        ${categoriesAvailable.map(category => `<option value="${attr(category)}" ${state.onlineFilters.category === category ? 'selected' : ''}>${categoryLabel(category)}</option>`).join('')}
-      </select></label>
-      <label><span>${tr('onlineEligibilityFilter')}</span><select data-online-filter="eligibility">
-        <option value="all">${tr('filterAll')}</option>
-        <option value="open" ${state.onlineFilters.eligibility === 'open' ? 'selected' : ''}>${tr('onlineEligibilityOpen')}</option>
-        <option value="structured" ${state.onlineFilters.eligibility === 'structured' ? 'selected' : ''}>${tr('onlineEligibilityStructured')}</option>
-        <option value="varies" ${state.onlineFilters.eligibility === 'varies' ? 'selected' : ''}>${tr('onlineEligibilityVaries')}</option>
-        <option value="localProvider" ${state.onlineFilters.eligibility === 'localProvider' ? 'selected' : ''}>${tr('onlineEligibilityLocalProvider')}</option>
-      </select></label>
-      <label><span>${tr('applicationMethodFilter')}</span><select data-online-filter="applicationMethod">
-        <option value="all">${tr('filterAll')}</option>
-        <option value="online" ${state.onlineFilters.applicationMethod === 'online' ? 'selected' : ''}>${tr('applyOnline')}</option>
-        <option value="phone" ${state.onlineFilters.applicationMethod === 'phone' ? 'selected' : ''}>${tr('applyByPhone')}</option>
-        <option value="mail" ${state.onlineFilters.applicationMethod === 'mail' ? 'selected' : ''}>${tr('applyByMail')}</option>
-        <option value="inPerson" ${state.onlineFilters.applicationMethod === 'inPerson' ? 'selected' : ''}>${tr('applyInPerson')}</option>
-        <option value="multiple" ${state.onlineFilters.applicationMethod === 'multiple' ? 'selected' : ''}>${tr('multipleMethods')}</option>
-      </select></label>
-    </section>
+    <div class="section-head nationwide-browse-head"><div><span class="eyebrow">${tr('officialSources')}</span><h2>${tr('browseNationwide')}</h2></div>${filterButton('online')}</div>
+    ${onlineFiltersPanel(categoriesAvailable)}
     <p class="results-summary">${tr('resultsCount', { count: filtered.length })}</p>
     <div class="resource-list nationwide-list">${filtered.length
       ? filtered.map(resource => nationwideCard(resource)).join('')
@@ -1703,6 +1781,7 @@ function chat() {
   const opening = state.mode === 'helper' ? tr('assistantHelperOpening') : tr('assistantSelfOpening');
   return `<button class="chat-launcher" data-chat aria-expanded="${state.chatOpen}">${tr('assistantName')} <span aria-hidden="true">${state.chatOpen ? '×' : '✦'}</span></button>
     ${state.chatOpen ? `<section class="chat-panel" aria-label="${attr(tr('assistantName'))}"
+      aria-busy="${state.chatLoading}"
       data-response-ms="${state.chatMetrics.lastResponseMs === null ? '' : Math.round(state.chatMetrics.lastResponseMs)}"
       data-response-strategy="${attr(state.chatMetrics.strategy)}">
       <div class="chat-head"><strong>${tr('assistantName')}</strong><small>${tr('assistantSubtitle')}</small></div>
@@ -1715,10 +1794,108 @@ function chat() {
         ${state.chatLoading ? `<div class="assistant-message chat-loading" role="status"><span class="spinner" aria-hidden="true"></span>${tr('assistantLoading')}</div>` : ''}
       </div>
       <form id="chatForm"><label class="sr-only" for="chatInput">${tr('assistantName')}</label>
-        <input id="chatInput" placeholder="${attr(tr('chatPlaceholder'))}">
-        <button class="primary">${tr('send')}</button>
+        <input id="chatInput" maxlength="1000" autocomplete="off" placeholder="${attr(tr('chatPlaceholder'))}" ${state.chatLoading ? 'disabled' : ''}>
+        <button class="primary" type="submit" ${state.chatLoading ? 'disabled' : ''}>${tr('send')}</button>
       </form>
     </section>` : ''}`;
+}
+
+function chatResourceNode(resource, language) {
+  const normalized = normalizeResource(resource, language);
+  const card = document.createElement('article');
+  card.className = 'chat-resource';
+  const name = document.createElement('strong');
+  name.textContent = normalized.name;
+  card.append(name);
+  const location = document.createElement('span');
+  location.textContent = normalized.scope === 'location'
+    ? (normalized.address || normalized.serviceAreas.join(', ') || tr('addressUnavailable', {}, language))
+    : tr('nationwideAccess', {}, language);
+  card.append(location);
+  const actions = document.createElement('div');
+  actions.className = 'card-actions';
+  if (normalized.phone) {
+    const call = document.createElement('a');
+    call.href = `tel:${phoneHref(normalized.phone)}`;
+    call.textContent = tr('call', {}, language);
+    actions.append(call);
+  }
+  if (normalized.scope === 'location') {
+    const directions = document.createElement('a');
+    directions.href = directionsUrl(normalized, 'walking');
+    directions.target = '_blank';
+    directions.rel = 'noopener noreferrer';
+    directions.textContent = tr('directions', {}, language);
+    actions.append(directions);
+  }
+  const save = document.createElement('button');
+  save.type = 'button';
+  save.className = 'ghost';
+  save.dataset.save = normalized.id;
+  save.setAttribute('aria-pressed', String(state.saved.has(normalized.id)));
+  save.textContent = state.saved.has(normalized.id)
+    ? `★ ${tr('savedAction', {}, language)}`
+    : `☆ ${tr('save', {}, language)}`;
+  actions.append(save);
+  const officialUrl = safeUrl(normalized.registrationUrl || normalized.officialWebsite || normalized.website);
+  if (officialUrl) {
+    const official = document.createElement('a');
+    official.href = officialUrl;
+    official.target = '_blank';
+    official.rel = 'noopener noreferrer';
+    official.textContent = tr(normalized.registrationUrl ? 'officialApplication' : 'officialWebsite', {}, language);
+    actions.append(official);
+  }
+  card.append(actions);
+  return card;
+}
+
+function syncChatDom({ pageScrollY = window.scrollY, focusInput = false } = {}) {
+  const panel = document.querySelector('.chat-panel');
+  const messages = panel?.querySelector('.chat-messages');
+  if (!panel || !messages) return;
+  const fragment = document.createDocumentFragment();
+  const opening = document.createElement('p');
+  opening.className = 'assistant-message';
+  opening.textContent = state.mode === 'helper' ? tr('assistantHelperOpening') : tr('assistantSelfOpening');
+  fragment.append(opening);
+  for (const message of state.chatMessages) {
+    const item = document.createElement('div');
+    item.className = `${message.role}-message`;
+    item.lang = message.language === 'zh' ? 'zh-Hans' : (message.language || state.lang);
+    const text = document.createElement('p');
+    text.textContent = message.text;
+    item.append(text);
+    for (const resource of message.recommendations || []) {
+      item.append(chatResourceNode(resource, message.language || state.lang));
+    }
+    fragment.append(item);
+  }
+  if (state.chatLoading) {
+    const loading = document.createElement('div');
+    loading.className = 'assistant-message chat-loading';
+    loading.setAttribute('role', 'status');
+    const spinner = document.createElement('span');
+    spinner.className = 'spinner';
+    spinner.setAttribute('aria-hidden', 'true');
+    loading.append(spinner, document.createTextNode(tr('assistantLoading')));
+    fragment.append(loading);
+  }
+  messages.replaceChildren(fragment);
+  panel.setAttribute('aria-busy', String(state.chatLoading));
+  panel.dataset.responseMs = state.chatMetrics.lastResponseMs === null
+    ? ''
+    : String(Math.round(state.chatMetrics.lastResponseMs));
+  panel.dataset.responseStrategy = state.chatMetrics.strategy;
+  const input = panel.querySelector('#chatInput');
+  const submit = panel.querySelector('#chatForm button[type="submit"]');
+  if (input) input.disabled = state.chatLoading;
+  if (submit) submit.disabled = state.chatLoading;
+  requestAnimationFrame(() => {
+    messages.scrollTop = messages.scrollHeight;
+    if (focusInput && input) input.focus({ preventScroll: true });
+    if (Math.abs(window.scrollY - pageScrollY) > 1) window.scrollTo(window.scrollX, pageScrollY);
+  });
 }
 
 function footer() {
@@ -2104,134 +2281,140 @@ async function processReport(form) {
   }
 }
 
+function chatCandidateResources(language) {
+  let candidates;
+  if (state.page === 'find' && state.searched) {
+    candidates = [...allResults().slice(0, 10), ...sourceResources];
+  } else if (state.page === 'nationwide' && state.nationwideQuiz.completed) {
+    const orderedIds = matchNationwidePrograms(
+      sourceResources.filter(resource => resource.scope !== 'location'),
+      state.nationwideQuiz.answers
+    ).map(match => String(match.resource.id));
+    const order = new Map(orderedIds.map((id, index) => [id, index]));
+    candidates = sourceResources
+      .filter(resource => order.has(String(resource.id)))
+      .sort((left, right) => order.get(String(left.id)) - order.get(String(right.id)));
+    candidates = [...candidates.slice(0, 10), ...sourceResources];
+  } else {
+    candidates = [
+      ...(state.chatContext.resourceIds || [])
+        .map(id => resourceById(String(id)))
+        .filter(Boolean),
+      ...state.liveResults,
+      ...state.savedResources,
+      ...sourceResources
+    ];
+  }
+  return mergeDuplicates(candidates)
+    .filter(resource => String(resource.id) !== '211')
+    .map(resource => normalizeResource(resource, language))
+    .filter(isDisplayableResource)
+    .slice(0, 20);
+}
+
+function chatErrorKey(code) {
+  return {
+    api_timeout: 'chatApiTimeout',
+    invalid_provider_response: 'chatInvalidResponse',
+    unsupported_language: 'chatUnsupportedLanguage',
+    rate_limited: 'chatRateLimited',
+    message_too_long: 'chatMessageTooLong',
+    request_too_large: 'chatMessageTooLong'
+  }[code] || 'chatApiUnavailable';
+}
+
 async function sendChat(form) {
+  if (state.chatLoading) return;
   const input = form.querySelector('#chatInput');
   const message = input.value.trim();
   if (!message) return;
+  const pageScrollY = window.scrollY;
   const responseStartedAt = performance.now();
-  performance.clearMarks?.('bridgeai-response-start');
-  performance.clearMarks?.('bridgeai-response-ready');
-  performance.clearMeasures?.('bridgeai-stored-response');
-  performance.mark?.('bridgeai-response-start');
-  const messageLanguage = requestedLanguage(message)
-    || detectMessageLanguage(message, state.chatContext.language || state.lang);
-  state.chatMessages.push({ role: 'user', text: message, language: messageLanguage });
+  const provisionalLanguage = detectMessageLanguage(message, state.lang);
+  const assistantResources = chatCandidateResources(provisionalLanguage);
+  state.chatMessages.push({ role: 'user', text: message, language: provisionalLanguage });
   state.chatLoading = true;
-  const requested = requestedLanguage(message);
-  if (requested) {
-    state.lang = requested;
-    state.languageExplicit = true;
-    persistShared();
-  }
-  const messageLocation = locationFromMessage(message);
-  const messageCategory = assistantCategory(message);
-  if (messageLocation) {
-    state.location = messageLocation;
-    state.locationContext = locationContext(messageLocation);
-  }
-  if (messageCategory) {
-    state.category = messageCategory;
-    state.query = categoryLabel(messageCategory);
-  }
-  state.situation = message;
-  applySituationFilters(message);
-  render();
-  await new Promise(resolve => requestAnimationFrame(resolve));
-  const responseKey = [
-    messageLanguage,
-    message.toLowerCase(),
-    state.location.toLowerCase(),
-    state.category,
-    state.chatContext.category || '',
-    state.chatContext.intent || '',
-    [...state.saved].sort().join(',')
-  ].join('|');
-  const liveResourceIds = new Set(state.liveResults.map(resource => String(resource.id)));
-  const assistantResources = mergeDuplicates([
-    ...state.liveResults,
-    ...state.storedResults,
-    ...state.savedResources,
-    ...sourceResources
-  ])
-    .filter(resource => String(resource.id) !== '211')
-    .map(resource => normalizeResource(resource, messageLanguage))
-    .filter(isDisplayableResource)
-    .filter(resource => resource.scope !== 'location'
-      || filterResources([resource], state.filters).length > 0)
-    .filter(resource => {
-      if (resource.scope !== 'location') return true;
-      if (liveResourceIds.has(String(resource.id))) return true;
-      const locationMatch = matchesUserLocation(resource, state.locationContext);
-      return resourceIsFresh(resource)
-        && locationMatch.serves === true
-        && locationMatch.confirmed;
+  input.value = '';
+  syncChatDom({ pageScrollY });
+  try {
+    const answer = await requestBridgeAI({
+      message,
+      interfaceLanguage: state.lang,
+      mode: state.mode,
+      location: state.location,
+      category: state.category
+        || state.chatContext.category
+        || state.helperIntake.serviceCategories?.[0]
+        || '',
+      currentPage: state.page,
+      activeFilters: Object.entries(state.filters)
+        .filter(([, value]) => value === true || (typeof value === 'string' && value.trim()))
+        .map(([key]) => key),
+      candidateResourceIds: assistantResources.map(resource => String(resource.id)),
+      savedResourceIds: [...state.saved],
+      selectedResourceId: state.selectedResourceId
+        || state.chatContext.resourceIds?.[0]
+        || ''
     });
-  const selectedForAssistant = currentResource();
-  const selectedIsAvailable = selectedForAssistant
-    && assistantResources.some(resource => String(resource.id) === selectedForAssistant.id);
-  const task = storedFirstResponse({
-    answer: () => {
-      if (responseCache.has(responseKey)) return responseCache.get(responseKey);
-      const answer = answerGroundedAssistant({
-        message,
-        selectedLanguage: messageLanguage,
-        languageExplicit: state.languageExplicit,
-        currentLocation: state.location,
-        resources: assistantResources,
-        context: {
-          ...state.chatContext,
-          category: state.chatContext.category
-            || state.category
-            || state.helperIntake.serviceCategories?.[0]
-            || '',
-          mode: state.mode,
-          helperConstraints: state.mode === 'helper' ? {
-            ageGroup: state.helperIntake.ageGroup || '',
-            transportation: state.helperIntake.transportation || '',
-            phoneAccess: state.helperIntake.phoneAccess || '',
-            preferredLanguage: state.helperIntake.preferredLanguage || ''
-          } : {}
-        },
-        selectedResource: selectedIsAvailable ? selectedForAssistant : null,
-        quizAnswers: state.nationwideQuiz.answers,
-        savedIds: [...state.saved],
-        translate
-      });
-      return responseCache.set(responseKey, answer);
-    },
-    enrich: async () => {
-      if (!state.location || !state.category) return [];
-      state.searched = true;
-      return searchNearby({ quiet: true });
+    const byId = new Map(assistantResources.map(resource => [String(resource.id), resource]));
+    if (answer.resourceIds.some(id => !byId.has(String(id)))) {
+      throw new ChatApiError('invalid_provider_response');
     }
-  });
-  const answer = task.response;
-  state.chatMetrics.answerComputeMs = task.responseMs;
-  state.chatMetrics.lastResponseMs = Math.max(0, performance.now() - responseStartedAt);
-  performance.mark?.('bridgeai-response-ready');
-  performance.measure?.('bridgeai-stored-response', 'bridgeai-response-start', 'bridgeai-response-ready');
-  state.chatContext = answer.context;
-  if (answer.action?.type === 'save') {
-    const resource = assistantResources.find(item => String(item.id) === String(answer.action.resourceId));
-    if (resource) {
+    const recommendations = answer.resourceIds.map(id => byId.get(String(id)));
+    if (answer.location) {
+      state.location = answer.location;
+      state.locationContext = locationContext(answer.location);
+    }
+    if (answer.category) {
+      state.category = answer.category;
+      state.query = categoryLabel(answer.category);
+    }
+    if (answer.intent === 'save_resource' && recommendations[0]) {
+      const resource = recommendations[0];
       state.saved.add(String(resource.id));
       state.savedResources = [
         ...state.savedResources.filter(item => String(item.id) !== String(resource.id)),
         resource
       ];
     }
+    if (answer.intent === 'remove_saved_resource' && answer.resourceIds[0]) {
+      const id = String(answer.resourceIds[0]);
+      state.saved.delete(id);
+      state.savedResources = state.savedResources.filter(resource => String(resource.id) !== id);
+    }
+    state.chatContext = answer;
+    state.chatMessages.push({
+      role: 'assistant',
+      text: answer.response,
+      language: answer.language,
+      recommendations
+    });
+    persistShared();
+  } catch (error) {
+    const code = error instanceof ChatApiError ? error.code : 'api_unavailable';
+    state.chatMessages.push({
+      role: 'assistant',
+      text: tr(chatErrorKey(code), {}, provisionalLanguage),
+      language: provisionalLanguage,
+      recommendations: []
+    });
+  } finally {
+    state.chatLoading = false;
+    state.chatMetrics.answerComputeMs = Math.max(0, performance.now() - responseStartedAt);
+    state.chatMetrics.lastResponseMs = state.chatMetrics.answerComputeMs;
+    state.chatMetrics.strategy = 'api';
+    syncChatDom({ pageScrollY, focusInput: true });
   }
-  state.chatMessages.push({
-    role: 'assistant',
-    text: answer.text,
-    language: answer.language,
-    recommendations: answer.recommendations
-  });
-  state.chatLoading = false;
-  persistShared();
-  render({ focus: '#chatInput' });
-  void task.enrichment;
 }
+
+app.addEventListener('keydown', event => {
+  if (!event.target.matches('#chatInput')
+    || event.key !== 'Enter'
+    || event.shiftKey
+    || event.isComposing) return;
+  event.preventDefault();
+  if (!state.chatLoading) event.target.form?.requestSubmit();
+});
 
 app.addEventListener('submit', event => {
   event.preventDefault();
@@ -2256,10 +2439,9 @@ app.addEventListener('submit', event => {
   if (event.target.matches('#nationwideQuizQuestion')) {
     const questionId = event.target.dataset.questionId;
     state.nationwideQuiz.answers[questionId] = String(new FormData(event.target).get('answer') || 'not-sure');
-    const questions = conditionalEligibilityQuestions(
-      sourceResources.filter(resource => resource.scope !== 'location'),
-      state.nationwideQuiz.answers
-    ).slice(0, 8);
+    const nationalResources = sourceResources.filter(resource => resource.scope !== 'location');
+    state.nationwideQuiz.answers = pruneConditionalAnswers(nationalResources, state.nationwideQuiz.answers);
+    const questions = conditionalEligibilityQuestions(nationalResources, state.nationwideQuiz.answers).slice(0, 8);
     state.nationwideQuiz.step += 1;
     state.nationwideQuiz.completed = state.nationwideQuiz.step >= questions.length;
     render({ focus: '#quiz-title' });
@@ -2352,10 +2534,9 @@ app.addEventListener('click', async event => {
     const form = target.closest('#nationwideQuizQuestion');
     const questionId = form?.dataset.questionId;
     if (questionId) state.nationwideQuiz.answers[questionId] = 'not-sure';
-    const questions = conditionalEligibilityQuestions(
-      sourceResources.filter(resource => resource.scope !== 'location'),
-      state.nationwideQuiz.answers
-    ).slice(0, 8);
+    const nationalResources = sourceResources.filter(resource => resource.scope !== 'location');
+    state.nationwideQuiz.answers = pruneConditionalAnswers(nationalResources, state.nationwideQuiz.answers);
+    const questions = conditionalEligibilityQuestions(nationalResources, state.nationwideQuiz.answers).slice(0, 8);
     state.nationwideQuiz.step += 1;
     state.nationwideQuiz.completed = state.nationwideQuiz.step >= questions.length;
     render({ focus: '#quiz-title' });
@@ -2479,18 +2660,60 @@ app.addEventListener('click', async event => {
     render();
   }
   if (target.matches('[data-print-plan]')) window.print();
+  if (target.matches('[data-toggle-filters]')) {
+    const kind = target.dataset.toggleFilters;
+    if (kind === 'online') {
+      state.onlineFiltersOpen = !state.onlineFiltersOpen;
+      state.onlineFilterDraft = { ...state.onlineFilters };
+    } else {
+      state.filtersOpen = !state.filtersOpen;
+      state.filterDraft = { ...state.filters };
+    }
+    render({
+      focus: (kind === 'online' ? state.onlineFiltersOpen : state.filtersOpen)
+        ? `#${kind === 'online' ? 'nationwide' : 'local'}-filter-panel input, #${kind === 'online' ? 'nationwide' : 'local'}-filter-panel select`
+        : `[data-toggle-filters="${kind}"]`
+    });
+  }
+  if (target.matches('[data-apply-filters]')) {
+    const kind = target.dataset.applyFilters;
+    if (kind === 'online') {
+      state.onlineFilters = { ...(state.onlineFilterDraft || state.onlineFilters) };
+      state.onlineFiltersOpen = false;
+    } else {
+      const draft = state.filterDraft || state.filters;
+      if (String(draft.language || '').length > 40) {
+        state.errorText = tr('filterError');
+        render({ focus: '[data-filter-draft-text="language"]' });
+        return;
+      }
+      state.filters = { ...draft };
+      state.filtersOpen = false;
+    }
+    state.errorText = '';
+    render({ focus: `[data-toggle-filters="${kind}"]` });
+  }
   if (target.matches('[data-clear-filters]')) {
-    state.filters = {
-      openNow: false,
-      availableToday: false,
-      walkIn: false,
-      noId: false,
-      noRegistration: false,
-      accessible: false,
-      language: '',
-      verifiedEligibility: false
-    };
-    render();
+    const kind = target.dataset.clearFilters;
+    if (kind === 'online') {
+      state.onlineFilters = { category: 'all', eligibility: 'all', applicationMethod: 'all' };
+      state.onlineFilterDraft = { ...state.onlineFilters };
+    } else {
+      state.filters = emptyLocalFilters();
+      state.filterDraft = { ...state.filters };
+    }
+    state.errorText = '';
+    render({
+      focus: kind === 'online'
+        ? '#nationwide-filter-panel select'
+        : '#local-filter-panel input'
+    });
+  }
+  if (target.matches('[data-close-filters]')) {
+    const kind = target.dataset.closeFilters;
+    if (kind === 'online') state.onlineFiltersOpen = false;
+    else state.filtersOpen = false;
+    render({ focus: `[data-toggle-filters="${kind}"]` });
   }
   if (target.matches('[data-retry-search]')) {
     state.errorKey = '';
@@ -2611,17 +2834,17 @@ app.addEventListener('change', event => {
     persistHelper();
     render();
   }
-  if (target.matches('[data-filter]')) {
-    state.filters[target.dataset.filter] = target.checked;
-    render();
+  if (target.matches('[data-filter-draft]')) {
+    state.filterDraft = state.filterDraft || { ...state.filters };
+    state.filterDraft[target.dataset.filterDraft] = target.checked;
   }
-  if (target.matches('[data-filter-text]')) {
-    state.filters[target.dataset.filterText] = target.value;
-    render();
+  if (target.matches('[data-filter-draft-text]')) {
+    state.filterDraft = state.filterDraft || { ...state.filters };
+    state.filterDraft[target.dataset.filterDraftText] = target.value.slice(0, 40);
   }
-  if (target.matches('[data-online-filter]')) {
-    state.onlineFilters[target.dataset.onlineFilter] = target.value;
-    render();
+  if (target.matches('[data-online-filter-draft]')) {
+    state.onlineFilterDraft = state.onlineFilterDraft || { ...state.onlineFilters };
+    state.onlineFilterDraft[target.dataset.onlineFilterDraft] = target.value;
   }
   if (target.matches('#sortBy')) {
     state.sortBy = target.value;
@@ -2711,12 +2934,12 @@ app.addEventListener('input', event => {
     return;
   }
   applySituationFilters(`${state.otherNeed} ${state.situation}`);
-  if (target.matches('[data-filter-text]')) {
+  if (target.matches('[data-filter-draft-text]')) {
     clearTimeout(filterInputTimer);
     filterInputTimer = setTimeout(() => {
-      state.filters[target.dataset.filterText] = target.value;
-      render();
-    }, 150);
+      state.filterDraft = state.filterDraft || { ...state.filters };
+      state.filterDraft[target.dataset.filterDraftText] = target.value.slice(0, 40);
+    }, 100);
   }
 });
 

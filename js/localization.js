@@ -1699,8 +1699,89 @@ const QUIZ_OPTION_TEXT = {
   }
 };
 
+const TASK_TEXT = {
+  en: {
+    homeMissionTitle: 'OUR MISSION',
+    filters: 'Filters',
+    filterButtonLabel: 'Filters. {count} active.',
+    filterPanelLabel: 'Resource filters',
+    applyFilters: 'Apply filters',
+    clearFilters: 'Clear filters',
+    filterError: 'A filter could not be applied. Review the filter values and try again.',
+    notSure: 'Not sure',
+    preferNotAnswer: 'Prefer not to answer',
+    quizQuestion_disabilityStatus: 'Do you have a disability?',
+    quizHelp_disabilityStatus: 'No diagnosis or medical records are requested.',
+    quizQuestion_qualifyingBenefits: 'Does anyone in your household receive SNAP?',
+    quizHelp_qualifyingBenefits: 'SNAP is a food benefit program.',
+    quizQuestion_pregnancyOrYoungChild: 'Is anyone in your household pregnant?',
+    quizRenderError: 'This question could not be displayed. Clear the quiz and try again.',
+    assistantLoading: 'BridgeAI is checking verified BridgeAid resources…',
+    chatApiUnavailable: 'BridgeAI is unavailable right now. You can still search Local Help.',
+    chatApiTimeout: 'BridgeAI took too long to respond. Please try again or search Local Help.',
+    chatInvalidResponse: 'BridgeAI returned an invalid response. No resource was shown.',
+    chatUnsupportedLanguage: 'BridgeAI currently supports English, Spanish, and Simplified Chinese.',
+    chatMissingLocation: 'What city or ZIP code are you in?',
+    chatNoMatches: 'No matching verified BridgeAid resources were found.',
+    chatRateLimited: 'BridgeAI has received too many requests. Please wait a moment and try again.',
+    chatMessageTooLong: 'Please shorten your message to 1,000 characters or fewer.'
+  },
+  es: {
+    homeMissionTitle: 'NUESTRA MISIÓN',
+    filters: 'Filtros',
+    filterButtonLabel: 'Filtros. {count} activos.',
+    filterPanelLabel: 'Filtros de recursos',
+    applyFilters: 'Aplicar filtros',
+    clearFilters: 'Borrar filtros',
+    filterError: 'No se pudo aplicar un filtro. Revise los valores e inténtelo de nuevo.',
+    notSure: 'No sé',
+    preferNotAnswer: 'Prefiero no responder',
+    quizQuestion_disabilityStatus: '¿Tiene una discapacidad?',
+    quizHelp_disabilityStatus: 'No se solicitan diagnósticos ni expedientes médicos.',
+    quizQuestion_qualifyingBenefits: '¿Alguien en su hogar recibe SNAP?',
+    quizHelp_qualifyingBenefits: 'SNAP es un programa de beneficios para alimentos.',
+    quizQuestion_pregnancyOrYoungChild: '¿Hay alguien embarazada en su hogar?',
+    quizRenderError: 'No se pudo mostrar esta pregunta. Borre el cuestionario e inténtelo de nuevo.',
+    assistantLoading: 'BridgeAI está revisando recursos verificados de BridgeAid…',
+    chatApiUnavailable: 'BridgeAI no está disponible ahora. Todavía puedes buscar en Ayuda local.',
+    chatApiTimeout: 'BridgeAI tardó demasiado en responder. Inténtalo de nuevo o busca en Ayuda local.',
+    chatInvalidResponse: 'BridgeAI devolvió una respuesta no válida. No se mostró ningún recurso.',
+    chatUnsupportedLanguage: 'BridgeAI actualmente admite inglés, español y chino simplificado.',
+    chatMissingLocation: '¿En qué ciudad o código postal estás?',
+    chatNoMatches: 'No se encontraron recursos verificados de BridgeAid que coincidan.',
+    chatRateLimited: 'BridgeAI recibió demasiadas solicitudes. Espera un momento e inténtalo de nuevo.',
+    chatMessageTooLong: 'Acorta el mensaje a 1.000 caracteres o menos.'
+  },
+  zh: {
+    homeMissionTitle: '我们的使命',
+    filters: '筛选',
+    filterButtonLabel: '筛选。已启用 {count} 项。',
+    filterPanelLabel: '资源筛选',
+    applyFilters: '应用筛选',
+    clearFilters: '清除筛选',
+    filterError: '无法应用某项筛选。请检查筛选值后重试。',
+    notSure: '不确定',
+    preferNotAnswer: '不想回答',
+    quizQuestion_disabilityStatus: '您有残障吗？',
+    quizHelp_disabilityStatus: '不会要求提供诊断或医疗记录。',
+    quizQuestion_qualifyingBenefits: '您家中是否有人领取 SNAP？',
+    quizHelp_qualifyingBenefits: 'SNAP 是一项食品福利计划。',
+    quizQuestion_pregnancyOrYoungChild: '您家中是否有人怀孕？',
+    quizRenderError: '无法显示此问题。请清除问卷后重试。',
+    assistantLoading: 'BridgeAI 正在查看经过核实的 BridgeAid 资源…',
+    chatApiUnavailable: 'BridgeAI 暂时无法使用。你仍然可以搜索本地援助。',
+    chatApiTimeout: 'BridgeAI 响应时间过长。请重试或搜索本地援助。',
+    chatInvalidResponse: 'BridgeAI 返回了无效响应，因此没有显示任何资源。',
+    chatUnsupportedLanguage: 'BridgeAI 目前支持英语、西班牙语和简体中文。',
+    chatMissingLocation: '您所在的城市或邮政编码是什么？',
+    chatNoMatches: '未找到匹配且经过核实的 BridgeAid 资源。',
+    chatRateLimited: 'BridgeAI 收到的请求过多。请稍后重试。',
+    chatMessageTooLong: '请将消息缩短至 1,000 个字符以内。'
+  }
+};
+
 for (const language of SUPPORTED_LANGUAGES) {
-  Object.assign(LOCALES[language], INTERFACE_TEXT[language], QUIZ_OPTION_TEXT[language]);
+  Object.assign(LOCALES[language], INTERFACE_TEXT[language], QUIZ_OPTION_TEXT[language], TASK_TEXT[language]);
 }
 
 function formatTemplate(template, variables) {

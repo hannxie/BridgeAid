@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title id="title">BridgeAid bridge mark</title>
+  <desc id="desc">Two supports, a bridge span, and a path moving forward.</desc>
+  <g fill="none" stroke="#155F4A" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M10 45V27M54 45V27" stroke-width="8"/>
+    <path d="M10 27C20 13 44 13 54 27" stroke-width="7"/>
+    <path d="M8 46H56" stroke-width="7"/>
+    <path d="M32 45V29" stroke-width="5"/>
+  </g>
+</svg>
+

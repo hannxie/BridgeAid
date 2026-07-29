@@ -77,7 +77,7 @@ export const QUIZ_QUESTION_BANK = Object.freeze({
     ]
   },
   disabilityStatus: {
-    label: 'Do you have a disability or serious health condition?',
+    label: 'Do you have a disability?',
     help: 'No diagnosis is requested or stored.',
     type: 'yesno'
   },
@@ -94,7 +94,7 @@ export const QUIZ_QUESTION_BANK = Object.freeze({
     ]
   },
   pregnancyOrYoungChild: {
-    label: 'Does the application involve pregnancy, postpartum or breastfeeding status, an infant, or a child under 5?',
+    label: 'Is anyone in your household pregnant?',
     type: 'yesno'
   },
   hasChildren: {
@@ -102,8 +102,8 @@ export const QUIZ_QUESTION_BANK = Object.freeze({
     type: 'yesno'
   },
   qualifyingBenefits: {
-    label: 'Does anyone in your household receive SNAP, Medicaid, SSI, TANF, public housing assistance, or another listed benefit?',
-    help: 'The official program will confirm which benefits count.',
+    label: 'Does anyone in your household receive SNAP?',
+    help: 'SNAP is a food benefit program.',
     type: 'yesno'
   },
   housingStatus: {
@@ -153,6 +153,16 @@ export function conditionalEligibilityQuestions(resources = [], answers = {}) {
     .filter(id => QUIZ_QUESTION_BANK[id])
     .sort((a, b) => priority.indexOf(a) - priority.indexOf(b))
     .map(id => ({ id, ...QUIZ_QUESTION_BANK[id] }));
+}
+
+export function pruneConditionalAnswers(resources = [], answers = {}) {
+  const allowed = new Set([
+    'needs',
+    ...conditionalEligibilityQuestions(resources, answers).map(question => question.id)
+  ]);
+  return Object.fromEntries(
+    Object.entries(answers).filter(([key]) => allowed.has(key))
+  );
 }
 
 function rangeValue(value) {

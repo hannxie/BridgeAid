@@ -8,7 +8,7 @@
   "description": "Find trusted local services and nationwide benefits with location-aware eligibility guidance.",
   "icons": [
     {
-      "src": "assets/bridgeaid-icon.svg",
+      "src": "assets/logo-bridgeaid-icon.svg",
       "sizes": "any",
       "type": "image/svg+xml",
       "purpose": "any maskable"

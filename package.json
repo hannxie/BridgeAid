@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "test": "node --test",
-    "check": "node --check js/app.js && node --test",
-    "start": "python -m http.server 8080"
+    "check": "node --check js/app.js && node --check server/index.js && node --test",
+    "start": "node server/index.js"
   }
 }
